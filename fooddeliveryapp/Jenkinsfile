@@ -84,7 +84,10 @@ pipeline {
 
                     echo.
                     echo Checking SCP...
-                    scp -V
+                    where scp
+
+                    echo.
+                    echo SCP is available.
                 '''
             }
         }
@@ -101,6 +104,11 @@ pipeline {
                         )
 
                         call mvnw.cmd clean test
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Maven tests failed.
+                            exit /b 1
+                        )
                     '''
                 }
             }
@@ -114,6 +122,13 @@ pipeline {
                     bat '''
                         call mvnw.cmd clean package -DskipTests=true
 
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Maven package failed.
+                            exit /b 1
+                        )
+
+                        echo.
+                        echo Generated JAR files:
                         dir target\\*.jar
                     '''
                 }
@@ -137,6 +152,11 @@ pipeline {
                                 call mvnw.cmd sonar:sonar ^
                                     -Dsonar.projectKey=food-delivery-app ^
                                     -Dsonar.projectName=food-delivery-app
+
+                                if %ERRORLEVEL% NEQ 0 (
+                                    echo ERROR: SonarQube analysis failed.
+                                    exit /b 1
+                                )
                             '''
                         }
                     }
@@ -150,7 +170,14 @@ pipeline {
                     echo "--> Building Docker Image..."
 
                     bat """
-                        docker build -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} -t ${FULL_IMAGE_NAME}:latest .
+                        docker build ^
+                            -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} ^
+                            -t ${FULL_IMAGE_NAME}:latest .
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Docker build failed.
+                            exit /b 1
+                        )
                     """
                 }
             }
@@ -162,13 +189,14 @@ pipeline {
                     echo "--> Validating Docker Image..."
 
                     bat """
-                        docker inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
+                        docker image inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker image validation failed.
                             exit /b 1
                         )
 
+                        echo.
                         echo Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified.
                     """
                 }
@@ -188,13 +216,19 @@ pipeline {
                 ]) {
 
                     bat '''
-                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+                        echo Logging into Docker Hub...
+
+                        echo %DOCKER_PASS% | docker login ^
+                            -u %DOCKER_USER% ^
+                            --password-stdin
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker Hub login failed.
                             exit /b 1
                         )
 
+                        echo.
+                        echo Pushing build image...
                         docker push %FULL_IMAGE_NAME%:%BUILD_NUMBER%
 
                         if %ERRORLEVEL% NEQ 0 (
@@ -203,6 +237,8 @@ pipeline {
                             exit /b 1
                         )
 
+                        echo.
+                        echo Pushing latest image...
                         docker push %FULL_IMAGE_NAME%:latest
 
                         if %ERRORLEVEL% NEQ 0 (
@@ -210,6 +246,9 @@ pipeline {
                             docker logout
                             exit /b 1
                         )
+
+                        echo.
+                        echo Docker images pushed successfully.
 
                         docker logout
                     '''
@@ -232,12 +271,16 @@ pipeline {
                     dir('fooddeliveryapp') {
 
                         bat """
-                            echo Setting SSH key permissions...
-
                             echo.
-                            echo Copying deploy.sh to EC2...
+                            echo ==========================================================
+                            echo Copying deploy.sh to EC2
+                            echo ==========================================================
 
-                            scp -o StrictHostKeyChecking=no -i "%SSH_KEY_FILE%" deploy.sh ${SSH_USER}@${params.EC2_IP}:/home/${SSH_USER}/deploy.sh
+                            scp ^
+                                -o StrictHostKeyChecking=no ^
+                                -i "%SSH_KEY_FILE%" ^
+                                deploy.sh ^
+                                ${SSH_USER}@${params.EC2_IP}:/home/${SSH_USER}/deploy.sh
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: SCP failed.
@@ -245,9 +288,15 @@ pipeline {
                             )
 
                             echo.
-                            echo Executing deployment script on EC2...
+                            echo ==========================================================
+                            echo Executing deployment script on EC2
+                            echo ==========================================================
 
-                            ssh -o StrictHostKeyChecking=no -i "%SSH_KEY_FILE%" ${SSH_USER}@${params.EC2_IP} "chmod +x /home/${SSH_USER}/deploy.sh && /home/${SSH_USER}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -i "%SSH_KEY_FILE%" ^
+                                ${SSH_USER}@${params.EC2_IP} ^
+                                "chmod +x /home/${SSH_USER}/deploy.sh && /home/${SSH_USER}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: EC2 deployment failed.
@@ -276,6 +325,7 @@ pipeline {
                         Write-Host "Health URL: \$healthUrl"
 
                         for (\$i = 1; \$i -le \$maxAttempts; \$i++) {
+
                             Write-Host "Attempt \$i of \$maxAttempts..."
 
                             try {
