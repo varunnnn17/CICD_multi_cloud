@@ -283,19 +283,56 @@ pipeline {
                                     throw "Jenkins SSH private key was not found: \$sourceKey"
                                 }
 
-                                # Copy the Jenkins-managed temporary key to a normal
-                                # workspace file. This avoids OpenSSH rejecting the
-                                # Jenkins secret file because of inherited Windows ACLs.
+                                # --------------------------------------------------
+                                # Prepare deploy.sh for Linux
+                                # Convert Windows CRLF line endings to Unix LF.
+                                # --------------------------------------------------
+
+                                Write-Host "Preparing deploy.sh for Linux..."
+
+                                \$deployScript = Join-Path (Get-Location) 'deploy.sh'
+
+                                if (-not (Test-Path \$deployScript)) {
+                                    throw "deploy.sh was not found: \$deployScript"
+                                }
+
+                                \$deployContent = [System.IO.File]::ReadAllText(
+                                    \$deployScript,
+                                    [System.Text.Encoding]::UTF8
+                                )
+
+                                # Remove Windows CR characters.
+                                \$deployContent = \$deployContent -replace "`r`n", "`n"
+                                \$deployContent = \$deployContent -replace "`r", "`n"
+
+                                [System.IO.File]::WriteAllText(
+                                    \$deployScript,
+                                    \$deployContent,
+                                    [System.Text.UTF8Encoding]::new(\$false)
+                                )
+
+                                Write-Host "deploy.sh converted to Unix LF line endings."
+
+                                # --------------------------------------------------
+                                # Prepare SSH key
+                                # --------------------------------------------------
+
+                                Write-Host ""
+                                Write-Host "Preparing local SSH key..."
+
                                 \$deployKey = Join-Path (Get-Location) 'jenkins-ec2-key.tmp'
 
-                                Write-Host "Preparing local SSH key..."
-                                Copy-Item -Path \$sourceKey -Destination \$deployKey -Force
+                                Copy-Item `
+                                    -Path \$sourceKey `
+                                    -Destination \$deployKey `
+                                    -Force
 
                                 if (-not (Test-Path \$deployKey)) {
                                     throw "Failed to create deployment SSH key: \$deployKey"
                                 }
 
                                 Write-Host "Removing inherited permissions from deployment key..."
+
                                 & icacls.exe \$deployKey /inheritance:r
 
                                 if (\$LASTEXITCODE -ne 0) {
@@ -303,6 +340,7 @@ pipeline {
                                 }
 
                                 Write-Host "Granting SYSTEM full access..."
+
                                 & icacls.exe \$deployKey /grant:r "SYSTEM:(F)"
 
                                 if (\$LASTEXITCODE -ne 0) {
@@ -310,6 +348,7 @@ pipeline {
                                 }
 
                                 Write-Host "Granting Administrators full access..."
+
                                 & icacls.exe \$deployKey /grant:r "Administrators:(F)"
 
                                 if (\$LASTEXITCODE -ne 0) {
@@ -319,6 +358,10 @@ pipeline {
                                 Write-Host ""
                                 Write-Host "Current deployment key permissions:"
                                 & icacls.exe \$deployKey
+
+                                # --------------------------------------------------
+                                # Test SSH
+                                # --------------------------------------------------
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
@@ -337,6 +380,10 @@ pipeline {
                                     throw "SSH connection test failed with exit code \$LASTEXITCODE."
                                 }
 
+                                # --------------------------------------------------
+                                # Copy deploy.sh
+                                # --------------------------------------------------
+
                                 Write-Host ""
                                 Write-Host "=========================================================="
                                 Write-Host "Copying deploy.sh to EC2"
@@ -353,6 +400,31 @@ pipeline {
                                 if (\$LASTEXITCODE -ne 0) {
                                     throw "SCP failed with exit code \$LASTEXITCODE."
                                 }
+
+                                # --------------------------------------------------
+                                # Verify Linux line endings remotely
+                                # --------------------------------------------------
+
+                                Write-Host ""
+                                Write-Host "=========================================================="
+                                Write-Host "Verifying deploy.sh on EC2"
+                                Write-Host "=========================================================="
+
+                                & ssh.exe `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -o ConnectTimeout=15 `
+                                    -i "\$deployKey" `
+                                    "\${remoteUser}@\${ec2Ip}" `
+                                    "file /home/\${remoteUser}/deploy.sh && head -n 1 /home/\${remoteUser}/deploy.sh"
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "Remote deploy.sh verification failed with exit code \$LASTEXITCODE."
+                                }
+
+                                # --------------------------------------------------
+                                # Execute deployment
+                                # --------------------------------------------------
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
@@ -378,9 +450,15 @@ pipeline {
                                 Write-Host "EC2 DEPLOYMENT COMMAND COMPLETED SUCCESSFULLY"
                                 Write-Host "=========================================================="
 
-                                # Remove temporary local deployment key.
+                                # --------------------------------------------------
+                                # Cleanup temporary SSH key
+                                # --------------------------------------------------
+
                                 if (Test-Path \$deployKey) {
-                                    Remove-Item -Path \$deployKey -Force -ErrorAction SilentlyContinue
+                                    Remove-Item `
+                                        -Path \$deployKey `
+                                        -Force `
+                                        -ErrorAction SilentlyContinue
                                 }
                             """
                         )
