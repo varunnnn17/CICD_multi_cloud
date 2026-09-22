@@ -1,0 +1,238 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'DOCKERHUB_USER', defaultValue: 'manyasreeya', description: 'Docker Hub username / namespace')
+        string(name: 'IMAGE_NAME', defaultValue: 'food-delivery', description: 'Docker image repository name')
+        string(name: 'EC2_IP', defaultValue: '3.89.36.223', description: 'AWS EC2 Public IP address for deployment')
+        string(name: 'EC2_USER', defaultValue: 'ubuntu', description: 'SSH username for EC2 instance (e.g., ubuntu or ec2-user)')
+        string(name: 'APP_PORT', defaultValue: '8083', description: 'Application port (must NOT conflict with Jenkins 8082)')
+        booleanParam(name: 'K8S_ENABLED', defaultValue: false, description: 'Deploy to Kubernetes (requires kubectl and cluster config)')
+        booleanParam(name: 'SONAR_ENABLED', defaultValue: false, description: 'Run SonarQube code analysis stage')
+    }
+
+    environment {
+        APP_NAME          = 'food-delivery'
+        DOCKER_CRED_ID    = 'dockercred1'
+        EC2_CRED_ID       = 'ec2-ssh-key'
+        FULL_IMAGE_NAME   = "${params.DOCKERHUB_USER}/${params.IMAGE_NAME}"
+        TARGET_PORT       = "${params.APP_PORT}"
+    }
+
+    stages {
+        stage('Environment Validation') {
+            steps {
+                echo "=========================================================="
+                echo "Validating CI/CD Pipeline Environment"
+                echo "Application Name:    ${APP_NAME}"
+                echo "Application Port:    ${TARGET_PORT} (Jenkins running on 8082)"
+                echo "Target Image:        ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                echo "EC2 Host Target:     ${params.EC2_IP}"
+                echo "Kubernetes Enabled:  ${params.K8S_ENABLED}"
+                echo "SonarQube Enabled:   ${params.SONAR_ENABLED}"
+                echo "=========================================================="
+
+                sh '''
+                    echo "Checking available tools..."
+                    java -version || true
+                    docker --version || true
+                    which curl || true
+                    which ssh || true
+                '''
+            }
+        }
+
+        stage('Maven Test') {
+            steps {
+                echo "--> Running Unit and Integration Tests..."
+                sh '''
+                    chmod +x ./mvnw || true
+                    ./mvnw clean test
+                '''
+            }
+        }
+
+        stage('Maven Package') {
+            steps {
+                echo "--> Packaging Spring Boot Executable JAR..."
+                sh '''
+                    ./mvnw clean package -DskipTests=true
+                    ls -la target/*.jar
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when {
+                expression { return params.SONAR_ENABLED == true }
+            }
+            steps {
+                echo "--> Executing SonarQube Scanner..."
+                script {
+                    try {
+                        withSonarQubeEnv('sonarqube') {
+                            sh '''
+                                ./mvnw sonar:sonar \
+                                    -Dsonar.projectKey=food-delivery-app \
+                                    -Dsonar.projectName=food-delivery-app
+                            '''
+                        }
+                    } catch (Exception e) {
+                        error("SonarQube analysis failed or SonarQube server is unavailable: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                echo "--> Building Multi-Stage Docker Image..."
+                sh """
+                    docker build -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} -t ${FULL_IMAGE_NAME}:latest .
+                """
+            }
+        }
+
+        stage('Docker Image Validation') {
+            steps {
+                echo "--> Validating Docker Image metadata and port exposure..."
+                sh """
+                    docker inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER} > /dev/null
+                    echo "Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified."
+                """
+            }
+        }
+
+        stage('Docker Hub Push') {
+            steps {
+                echo "--> Authenticating with Docker Hub and pushing image..."
+                script {
+                    try {
+                        withCredentials([usernamePassword(
+                            credentialsId: env.DOCKER_CRED_ID,
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASS'
+                        )]) {
+                            sh '''
+                                echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                                docker push "${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                                docker push "${FULL_IMAGE_NAME}:latest"
+                                docker logout
+                            '''
+                        }
+                    } catch (Exception e) {
+                        error("Docker Hub push failed. Ensure Jenkins credential '${env.DOCKER_CRED_ID}' exists and has push permissions to '${params.DOCKERHUB_USER}'. Error: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to AWS EC2') {
+            steps {
+                echo "--> Deploying application to AWS EC2 (${params.EC2_IP}:${TARGET_PORT})..."
+                script {
+                    try {
+                        withCredentials([sshUserPrivateKey(
+                            credentialsId: env.EC2_CRED_ID,
+                            keyFileVariable: 'SSH_KEY_FILE',
+                            usernameVariable: 'SSH_USER'
+                        )]) {
+                            def remoteUser = SSH_USER ?: params.EC2_USER
+                            sh """
+                                chmod 600 "\$SSH_KEY_FILE"
+                                echo "Copying deploy.sh to EC2..."
+                                scp -o StrictHostKeyChecking=no -i "\$SSH_KEY_FILE" deploy.sh ${remoteUser}@${params.EC2_IP}:/home/${remoteUser}/deploy.sh
+                                
+                                echo "Executing deploy.sh on EC2..."
+                                ssh -o StrictHostKeyChecking=no -i "\$SSH_KEY_FILE" ${remoteUser}@${params.EC2_IP} \
+                                    "chmod +x /home/${remoteUser}/deploy.sh && /home/${remoteUser}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                            """
+                        }
+                    } catch (Exception e) {
+                        error("EC2 SSH Deployment failed. Verify credential '${env.EC2_CRED_ID}', EC2 host '${params.EC2_IP}', and Security Group port 22/8083. Error: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        stage('EC2 Health Check') {
+            steps {
+                echo "--> Verifying EC2 Deployment Health on http://${params.EC2_IP}:${TARGET_PORT}/actuator/health..."
+                sh """
+                    HEALTH_URL="http://${params.EC2_IP}:${TARGET_PORT}/actuator/health"
+                    MAX_ATTEMPTS=12
+                    SLEEP_SECONDS=5
+                    SUCCESS=false
+
+                    echo "Polling health endpoint: \$HEALTH_URL"
+                    for i in \$(seq 1 \$MAX_ATTEMPTS); do
+                        echo "Attempt \$i of \$MAX_ATTEMPTS: Checking application health..."
+                        STATUS=\$(curl -s -o /dev/null -w "%{http_code}" "\$HEALTH_URL" || true)
+                        if [ "\$STATUS" = "200" ]; then
+                            echo "Application health status: HTTP 200 OK"
+                            SUCCESS=true
+                            break
+                        fi
+                        echo "Received HTTP \$STATUS. Retrying in \${SLEEP_SECONDS}s..."
+                        sleep \$SLEEP_SECONDS
+                    done
+
+                    if [ "\$SUCCESS" = "true" ]; then
+                        echo "=========================================================="
+                        echo "Application deployment successful"
+                        echo "Access URL: http://${params.EC2_IP}:${TARGET_PORT}"
+                        echo "=========================================================="
+                    else
+                        echo "=========================================================="
+                        echo "Application deployment failed - Health check timed out"
+                        echo "=========================================================="
+                        exit 1
+                    fi
+                """
+            }
+        }
+
+        stage('Kubernetes Deploy') {
+            when {
+                expression { return params.K8S_ENABLED == true }
+            }
+            steps {
+                echo "--> Deploying to Kubernetes Cluster..."
+                sh '''
+                    if ! command -v kubectl &> /dev/null; then
+                        echo "ERROR: kubectl command not found on Jenkins agent."
+                        exit 1
+                    fi
+                    kubectl cluster-info || { echo "ERROR: Cannot connect to Kubernetes cluster."; exit 1; }
+                    kubectl apply -f k8s/configmap.yaml
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl apply -f k8s/service.yaml
+                    kubectl rollout status deployment/fooddelivery-deployment --timeout=180s
+                    kubectl get svc fooddelivery-service
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "CI/CD Pipeline finished for Build #${BUILD_NUMBER}"
+        }
+        success {
+            echo "=========================================================="
+            echo "PIPELINE SUCCESS: Food Delivery App deployed to EC2 on port ${TARGET_PORT}"
+            echo "=========================================================="
+        }
+        failure {
+            echo "=========================================================="
+            echo "PIPELINE FAILED: Check the stage logs above for failure details."
+            echo "=========================================================="
+        }
+        cleanup {
+            echo "Cleaning up local build workspace and dangling Docker images..."
+            sh """
+                docker image prune -f || true
+            """
+        }
+    }
+}

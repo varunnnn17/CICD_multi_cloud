@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fooddelivery-config
+  labels:
+    app: fooddelivery
+data:
+  SERVER_PORT: "8083"
+  SPRING_PROFILES_ACTIVE: "prod"

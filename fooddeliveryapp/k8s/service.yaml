@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: fooddelivery-service
+  labels:
+    app: fooddelivery
+spec:
+  selector:
+    app: fooddelivery
+  type: LoadBalancer
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8083
+    targetPort: 8083
