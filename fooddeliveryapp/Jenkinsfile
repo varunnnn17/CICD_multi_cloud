@@ -85,9 +85,6 @@ pipeline {
                     echo.
                     echo Checking SCP...
                     where scp
-
-                    echo.
-                    echo SCP is available.
                 '''
             }
         }
@@ -104,11 +101,6 @@ pipeline {
                         )
 
                         call mvnw.cmd clean test
-
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Maven tests failed.
-                            exit /b 1
-                        )
                     '''
                 }
             }
@@ -122,13 +114,6 @@ pipeline {
                     bat '''
                         call mvnw.cmd clean package -DskipTests=true
 
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Maven package failed.
-                            exit /b 1
-                        )
-
-                        echo.
-                        echo Generated JAR files:
                         dir target\\*.jar
                     '''
                 }
@@ -152,11 +137,6 @@ pipeline {
                                 call mvnw.cmd sonar:sonar ^
                                     -Dsonar.projectKey=food-delivery-app ^
                                     -Dsonar.projectName=food-delivery-app
-
-                                if %ERRORLEVEL% NEQ 0 (
-                                    echo ERROR: SonarQube analysis failed.
-                                    exit /b 1
-                                )
                             '''
                         }
                     }
@@ -170,9 +150,7 @@ pipeline {
                     echo "--> Building Docker Image..."
 
                     bat """
-                        docker build ^
-                            -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} ^
-                            -t ${FULL_IMAGE_NAME}:latest .
+                        docker build -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} -t ${FULL_IMAGE_NAME}:latest .
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker build failed.
@@ -196,7 +174,6 @@ pipeline {
                             exit /b 1
                         )
 
-                        echo.
                         echo Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified.
                     """
                 }
@@ -217,10 +194,7 @@ pipeline {
 
                     bat '''
                         echo Logging into Docker Hub...
-
-                        echo %DOCKER_PASS% | docker login ^
-                            -u %DOCKER_USER% ^
-                            --password-stdin
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker Hub login failed.
@@ -235,7 +209,7 @@ pipeline {
                             echo ERROR: Docker image push failed.
                             docker logout
                             exit /b 1
-                        )
+                        }
 
                         echo.
                         echo Pushing latest image...
@@ -245,11 +219,10 @@ pipeline {
                             echo ERROR: Docker latest image push failed.
                             docker logout
                             exit /b 1
-                        )
+                        }
 
                         echo.
                         echo Docker images pushed successfully.
-
                         docker logout
                     '''
                 }
@@ -270,42 +243,99 @@ pipeline {
 
                     dir('fooddeliveryapp') {
 
-                        bat """
-                            echo.
-                            echo ==========================================================
-                            echo Copying deploy.sh to EC2
-                            echo ==========================================================
+                        powershell(
+                            script: """
+                                \$ErrorActionPreference = 'Stop'
 
-                            scp ^
-                                -o StrictHostKeyChecking=no ^
-                                -i "%SSH_KEY_FILE%" ^
-                                deploy.sh ^
-                                ${SSH_USER}@${params.EC2_IP}:/home/${SSH_USER}/deploy.sh
+                                \$keyFile = \$env:SSH_KEY_FILE
+                                \$remoteUser = \$env:SSH_USER
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: SCP failed.
-                                exit /b 1
-                            )
+                                if ([string]::IsNullOrWhiteSpace(\$remoteUser)) {
+                                    \$remoteUser = '${params.EC2_USER}'
+                                }
 
-                            echo.
-                            echo ==========================================================
-                            echo Executing deployment script on EC2
-                            echo ==========================================================
+                                \$ec2Ip = '${params.EC2_IP}'
+                                \$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
 
-                            ssh ^
-                                -o StrictHostKeyChecking=no ^
-                                -i "%SSH_KEY_FILE%" ^
-                                ${SSH_USER}@${params.EC2_IP} ^
-                                "chmod +x /home/${SSH_USER}/deploy.sh && /home/${SSH_USER}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                                Write-Host "=========================================================="
+                                Write-Host "Preparing SSH key permissions"
+                                Write-Host "=========================================================="
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: EC2 deployment failed.
-                                exit /b 1
-                            )
+                                Write-Host "SSH key: \$keyFile"
+                                Write-Host "Remote user: \$remoteUser"
+                                Write-Host "EC2 host: \$ec2Ip"
+                                Write-Host "Docker image: \$imageName"
 
-                            echo.
-                            echo EC2 deployment command completed successfully.
-                        """
+                                if (-not (Test-Path \$keyFile)) {
+                                    throw "SSH private key file was not found: \$keyFile"
+                                }
+
+                                Write-Host ""
+                                Write-Host "Removing inherited permissions from SSH key..."
+
+                                & icacls.exe \$keyFile /inheritance:r
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "Failed to remove inherited permissions from SSH key."
+                                }
+
+                                Write-Host ""
+                                Write-Host "Granting access only to SYSTEM and Administrators..."
+
+                                & icacls.exe \$keyFile /grant:r "SYSTEM:(F)" "Administrators:(F)"
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "Failed to set SSH key permissions."
+                                }
+
+                                Write-Host ""
+                                Write-Host "Removing BUILTIN\\Users access if present..."
+
+                                & icacls.exe \$keyFile /remove:g "BUILTIN\\Users"
+                                if (\$LASTEXITCODE -ne 0) {
+                                    Write-Host "BUILTIN\\Users entry was not present or could not be removed."
+                                }
+
+                                Write-Host ""
+                                Write-Host "Current SSH key permissions:"
+                                & icacls.exe \$keyFile
+
+                                Write-Host ""
+                                Write-Host "=========================================================="
+                                Write-Host "Copying deploy.sh to EC2"
+                                Write-Host "=========================================================="
+
+                                & scp.exe `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -i "\$keyFile" `
+                                    "deploy.sh" `
+                                    "\${remoteUser}@\${ec2Ip}:/home/\${remoteUser}/deploy.sh"
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "SCP failed with exit code \$LASTEXITCODE."
+                                }
+
+                                Write-Host ""
+                                Write-Host "=========================================================="
+                                Write-Host "Executing deploy.sh on EC2"
+                                Write-Host "=========================================================="
+
+                                & ssh.exe `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -i "\$keyFile" `
+                                    "\${remoteUser}@\${ec2Ip}" `
+                                    "chmod +x /home/\${remoteUser}/deploy.sh && /home/\${remoteUser}/deploy.sh \$imageName"
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "EC2 deployment failed with exit code \$LASTEXITCODE."
+                                }
+
+                                Write-Host ""
+                                Write-Host "=========================================================="
+                                Write-Host "EC2 deployment command completed successfully"
+                                Write-Host "=========================================================="
+                            """
+                        )
                     }
                 }
             }
@@ -325,7 +355,6 @@ pipeline {
                         Write-Host "Health URL: \$healthUrl"
 
                         for (\$i = 1; \$i -le \$maxAttempts; \$i++) {
-
                             Write-Host "Attempt \$i of \$maxAttempts..."
 
                             try {
@@ -414,7 +443,6 @@ pipeline {
     }
 
     post {
-
         always {
             echo "CI/CD Pipeline finished for Build #${BUILD_NUMBER}"
         }
