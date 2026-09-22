@@ -192,7 +192,7 @@ pipeline {
                     )
                 ]) {
 
-                    bat '''
+                    bat """
                         echo Logging into Docker Hub...
                         echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
@@ -202,29 +202,44 @@ pipeline {
                         )
 
                         echo.
-                        echo Pushing build image...
-                        docker push %FULL_IMAGE_NAME%:%BUILD_NUMBER%
+                        echo ==========================================================
+                        echo Pushing build image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
+                        echo ==========================================================
+
+                        docker push ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Docker image push failed.
+                            echo ERROR: Docker build image push failed.
                             docker logout
                             exit /b 1
-                        }
+                        )
 
                         echo.
-                        echo Pushing latest image...
-                        docker push %FULL_IMAGE_NAME%:latest
+                        echo ==========================================================
+                        echo Pushing latest image: ${FULL_IMAGE_NAME}:latest
+                        echo ==========================================================
+
+                        docker push ${FULL_IMAGE_NAME}:latest
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker latest image push failed.
                             docker logout
                             exit /b 1
-                        }
+                        )
 
                         echo.
-                        echo Docker images pushed successfully.
+                        echo ==========================================================
+                        echo Docker images pushed successfully
+                        echo ==========================================================
+
                         docker logout
-                    '''
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo WARNING: Docker logout returned a non-zero exit code.
+                        )
+
+                        exit /b 0
+                    """
                 }
             }
         }
@@ -247,56 +262,80 @@ pipeline {
                             script: """
                                 \$ErrorActionPreference = 'Stop'
 
-                                \$keyFile = \$env:SSH_KEY_FILE
+                                \$sourceKey = \$env:SSH_KEY_FILE
                                 \$remoteUser = \$env:SSH_USER
+                                \$ec2Ip = '${params.EC2_IP}'
+                                \$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
 
                                 if ([string]::IsNullOrWhiteSpace(\$remoteUser)) {
                                     \$remoteUser = '${params.EC2_USER}'
                                 }
 
-                                \$ec2Ip = '${params.EC2_IP}'
-                                \$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
-
                                 Write-Host "=========================================================="
-                                Write-Host "Preparing SSH key permissions"
+                                Write-Host "AWS EC2 DEPLOYMENT"
                                 Write-Host "=========================================================="
-
-                                Write-Host "SSH key: \$keyFile"
-                                Write-Host "Remote user: \$remoteUser"
-                                Write-Host "EC2 host: \$ec2Ip"
+                                Write-Host "Remote user : \$remoteUser"
+                                Write-Host "EC2 host    : \$ec2Ip"
                                 Write-Host "Docker image: \$imageName"
+                                Write-Host ""
 
-                                if (-not (Test-Path \$keyFile)) {
-                                    throw "SSH private key file was not found: \$keyFile"
+                                if (-not (Test-Path \$sourceKey)) {
+                                    throw "Jenkins SSH private key was not found: \$sourceKey"
                                 }
 
-                                Write-Host ""
-                                Write-Host "Removing inherited permissions from SSH key..."
+                                # Copy the Jenkins-managed temporary key to a normal
+                                # workspace file. This avoids OpenSSH rejecting the
+                                # Jenkins secret file because of inherited Windows ACLs.
+                                \$deployKey = Join-Path (Get-Location) 'jenkins-ec2-key.tmp'
 
-                                & icacls.exe \$keyFile /inheritance:r
+                                Write-Host "Preparing local SSH key..."
+                                Copy-Item -Path \$sourceKey -Destination \$deployKey -Force
+
+                                if (-not (Test-Path \$deployKey)) {
+                                    throw "Failed to create deployment SSH key: \$deployKey"
+                                }
+
+                                Write-Host "Removing inherited permissions from deployment key..."
+                                & icacls.exe \$deployKey /inheritance:r
+
                                 if (\$LASTEXITCODE -ne 0) {
-                                    throw "Failed to remove inherited permissions from SSH key."
+                                    throw "Failed to remove inherited permissions from deployment key."
                                 }
 
-                                Write-Host ""
-                                Write-Host "Granting access only to SYSTEM and Administrators..."
+                                Write-Host "Granting SYSTEM full access..."
+                                & icacls.exe \$deployKey /grant:r "SYSTEM:(F)"
 
-                                & icacls.exe \$keyFile /grant:r "SYSTEM:(F)" "Administrators:(F)"
                                 if (\$LASTEXITCODE -ne 0) {
-                                    throw "Failed to set SSH key permissions."
+                                    throw "Failed to grant SYSTEM access to deployment key."
                                 }
 
-                                Write-Host ""
-                                Write-Host "Removing BUILTIN\\Users access if present..."
+                                Write-Host "Granting Administrators full access..."
+                                & icacls.exe \$deployKey /grant:r "Administrators:(F)"
 
-                                & icacls.exe \$keyFile /remove:g "BUILTIN\\Users"
                                 if (\$LASTEXITCODE -ne 0) {
-                                    Write-Host "BUILTIN\\Users entry was not present or could not be removed."
+                                    throw "Failed to grant Administrators access to deployment key."
                                 }
 
                                 Write-Host ""
-                                Write-Host "Current SSH key permissions:"
-                                & icacls.exe \$keyFile
+                                Write-Host "Current deployment key permissions:"
+                                & icacls.exe \$deployKey
+
+                                Write-Host ""
+                                Write-Host "=========================================================="
+                                Write-Host "Testing SSH connection to EC2"
+                                Write-Host "=========================================================="
+
+                                & ssh.exe `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -o ConnectTimeout=15 `
+                                    -i "\$deployKey" `
+                                    "\${remoteUser}@\${ec2Ip}" `
+                                    "echo SSH_CONNECTION_SUCCESS"
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw "SSH connection test failed with exit code \$LASTEXITCODE."
+                                }
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
@@ -306,7 +345,8 @@ pipeline {
                                 & scp.exe `
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
-                                    -i "\$keyFile" `
+                                    -o ConnectTimeout=15 `
+                                    -i "\$deployKey" `
                                     "deploy.sh" `
                                     "\${remoteUser}@\${ec2Ip}:/home/\${remoteUser}/deploy.sh"
 
@@ -316,15 +356,18 @@ pipeline {
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
-                                Write-Host "Executing deploy.sh on EC2"
+                                Write-Host "Executing deployment on EC2"
                                 Write-Host "=========================================================="
+
+                                \$remoteCommand = "chmod +x /home/\${remoteUser}/deploy.sh && /home/\${remoteUser}/deploy.sh \$imageName"
 
                                 & ssh.exe `
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
-                                    -i "\$keyFile" `
+                                    -o ConnectTimeout=15 `
+                                    -i "\$deployKey" `
                                     "\${remoteUser}@\${ec2Ip}" `
-                                    "chmod +x /home/\${remoteUser}/deploy.sh && /home/\${remoteUser}/deploy.sh \$imageName"
+                                    \$remoteCommand
 
                                 if (\$LASTEXITCODE -ne 0) {
                                     throw "EC2 deployment failed with exit code \$LASTEXITCODE."
@@ -332,8 +375,13 @@ pipeline {
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
-                                Write-Host "EC2 deployment command completed successfully"
+                                Write-Host "EC2 DEPLOYMENT COMMAND COMPLETED SUCCESSFULLY"
                                 Write-Host "=========================================================="
+
+                                # Remove temporary local deployment key.
+                                if (Test-Path \$deployKey) {
+                                    Remove-Item -Path \$deployKey -Force -ErrorAction SilentlyContinue
+                                }
                             """
                         )
                     }
