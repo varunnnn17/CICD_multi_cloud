@@ -59,21 +59,32 @@ pipeline {
             steps {
                 echo "=========================================================="
                 echo "Validating CI/CD Pipeline Environment"
-                echo "Application Name:    ${APP_NAME}"
+                echo "Jenkins Agent: Windows"
                 echo "Application Directory: fooddeliveryapp"
-                echo "Application Port:    ${TARGET_PORT}"
-                echo "Target Image:        ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-                echo "EC2 Host Target:     ${params.EC2_IP}"
-                echo "Kubernetes Enabled:  ${params.K8S_ENABLED}"
-                echo "SonarQube Enabled:   ${params.SONAR_ENABLED}"
+                echo "Application Port: ${TARGET_PORT}"
+                echo "Target Image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                echo "EC2 Host: ${params.EC2_IP}"
                 echo "=========================================================="
 
-                sh '''
-                    echo "Checking available tools..."
-                    java -version || true
-                    docker --version || true
-                    curl --version | head -n 1 || true
-                    ssh -V || true
+                bat '''
+                    echo Checking Java...
+                    java -version
+
+                    echo.
+                    echo Checking Docker...
+                    docker --version
+
+                    echo.
+                    echo Checking Git...
+                    git --version
+
+                    echo.
+                    echo Checking SSH...
+                    ssh -V
+
+                    echo.
+                    echo Checking SCP...
+                    scp -V
                 '''
             }
         }
@@ -83,9 +94,13 @@ pipeline {
                 dir('fooddeliveryapp') {
                     echo "--> Running Unit and Integration Tests..."
 
-                    sh '''
-                        chmod +x ./mvnw
-                        ./mvnw clean test
+                    bat '''
+                        if not exist mvnw.cmd (
+                            echo ERROR: mvnw.cmd not found
+                            exit /b 1
+                        )
+
+                        call mvnw.cmd clean test
                     '''
                 }
             }
@@ -96,9 +111,10 @@ pipeline {
                 dir('fooddeliveryapp') {
                     echo "--> Packaging Spring Boot Executable JAR..."
 
-                    sh '''
-                        ./mvnw clean package -DskipTests=true
-                        ls -la target/*.jar
+                    bat '''
+                        call mvnw.cmd clean package -DskipTests=true
+
+                        dir target\\*.jar
                     '''
                 }
             }
@@ -116,18 +132,12 @@ pipeline {
                     echo "--> Executing SonarQube Scanner..."
 
                     script {
-                        try {
-                            withSonarQubeEnv('sonarqube') {
-                                sh '''
-                                    ./mvnw sonar:sonar \
-                                        -Dsonar.projectKey=food-delivery-app \
-                                        -Dsonar.projectName=food-delivery-app
-                                '''
-                            }
-                        } catch (Exception e) {
-                            error(
-                                "SonarQube analysis failed or SonarQube server is unavailable: ${e.message}"
-                            )
+                        withSonarQubeEnv('sonarqube') {
+                            bat '''
+                                call mvnw.cmd sonar:sonar ^
+                                    -Dsonar.projectKey=food-delivery-app ^
+                                    -Dsonar.projectName=food-delivery-app
+                            '''
                         }
                     }
                 }
@@ -139,11 +149,8 @@ pipeline {
                 dir('fooddeliveryapp') {
                     echo "--> Building Docker Image..."
 
-                    sh """
-                        docker build \
-                            -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} \
-                            -t ${FULL_IMAGE_NAME}:latest \
-                            .
+                    bat """
+                        docker build -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} -t ${FULL_IMAGE_NAME}:latest .
                     """
                 }
             }
@@ -154,10 +161,15 @@ pipeline {
                 dir('fooddeliveryapp') {
                     echo "--> Validating Docker Image..."
 
-                    sh """
-                        docker inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER} > /dev/null
+                    bat """
+                        docker inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
-                        echo "Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified."
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Docker image validation failed.
+                            exit /b 1
+                        )
+
+                        echo Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified.
                     """
                 }
             }
@@ -167,87 +179,84 @@ pipeline {
             steps {
                 echo "--> Authenticating with Docker Hub and pushing image..."
 
-                script {
-                    try {
-                        withCredentials([
-                            usernamePassword(
-                                credentialsId: env.DOCKER_CRED_ID,
-                                usernameVariable: 'DOCKER_USER',
-                                passwordVariable: 'DOCKER_PASS'
-                            )
-                        ]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: env.DOCKER_CRED_ID,
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
 
-                            sh '''
-                                echo "$DOCKER_PASS" | docker login \
-                                    -u "$DOCKER_USER" \
-                                    --password-stdin
+                    bat '''
+                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
 
-                                docker push "${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-
-                                docker push "${FULL_IMAGE_NAME}:latest"
-
-                                docker logout
-                            '''
-                        }
-                    } catch (Exception e) {
-                        error(
-                            "Docker Hub push failed. " +
-                            "Ensure credential '${env.DOCKER_CRED_ID}' exists " +
-                            "and has permission to push to '${params.DOCKERHUB_USER}'. " +
-                            "Error: ${e.message}"
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Docker Hub login failed.
+                            exit /b 1
                         )
-                    }
+
+                        docker push %FULL_IMAGE_NAME%:%BUILD_NUMBER%
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Docker image push failed.
+                            docker logout
+                            exit /b 1
+                        )
+
+                        docker push %FULL_IMAGE_NAME%:latest
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Docker latest image push failed.
+                            docker logout
+                            exit /b 1
+                        )
+
+                        docker logout
+                    '''
                 }
             }
         }
 
         stage('Deploy to AWS EC2') {
             steps {
-                echo "--> Deploying application to AWS EC2 (${params.EC2_IP}:${TARGET_PORT})..."
+                echo "--> Deploying application to AWS EC2..."
 
-                script {
-                    try {
-                        withCredentials([
-                            sshUserPrivateKey(
-                                credentialsId: env.EC2_CRED_ID,
-                                keyFileVariable: 'SSH_KEY_FILE',
-                                usernameVariable: 'SSH_USER'
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: env.EC2_CRED_ID,
+                        keyFileVariable: 'SSH_KEY_FILE',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+
+                    dir('fooddeliveryapp') {
+
+                        bat """
+                            echo Setting SSH key permissions...
+
+                            echo.
+                            echo Copying deploy.sh to EC2...
+
+                            scp -o StrictHostKeyChecking=no -i "%SSH_KEY_FILE%" deploy.sh ${SSH_USER}@${params.EC2_IP}:/home/${SSH_USER}/deploy.sh
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SCP failed.
+                                exit /b 1
                             )
-                        ]) {
 
-                            def remoteUser = SSH_USER ?: params.EC2_USER
+                            echo.
+                            echo Executing deployment script on EC2...
 
-                            dir('fooddeliveryapp') {
+                            ssh -o StrictHostKeyChecking=no -i "%SSH_KEY_FILE%" ${SSH_USER}@${params.EC2_IP} "chmod +x /home/${SSH_USER}/deploy.sh && /home/${SSH_USER}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
 
-                                sh """
-                                    chmod 600 "\$SSH_KEY_FILE"
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: EC2 deployment failed.
+                                exit /b 1
+                            )
 
-                                    echo "Copying deploy.sh to EC2..."
-
-                                    scp \
-                                        -o StrictHostKeyChecking=no \
-                                        -i "\$SSH_KEY_FILE" \
-                                        deploy.sh \
-                                        ${remoteUser}@${params.EC2_IP}:/home/${remoteUser}/deploy.sh
-
-                                    echo "Executing deploy.sh on EC2..."
-
-                                    ssh \
-                                        -o StrictHostKeyChecking=no \
-                                        -i "\$SSH_KEY_FILE" \
-                                        ${remoteUser}@${params.EC2_IP} \
-                                        "chmod +x /home/${remoteUser}/deploy.sh && /home/${remoteUser}/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-                                """
-                            }
-                        }
-                    } catch (Exception e) {
-                        error(
-                            "EC2 SSH Deployment failed. " +
-                            "Verify credential '${env.EC2_CRED_ID}', " +
-                            "EC2 host '${params.EC2_IP}', " +
-                            "and Security Group ports 22/8083. " +
-                            "Error: ${e.message}"
-                        )
+                            echo.
+                            echo EC2 deployment command completed successfully.
+                        """
                     }
                 }
             }
@@ -255,64 +264,63 @@ pipeline {
 
         stage('EC2 Health Check') {
             steps {
-                echo "--> Verifying EC2 Deployment Health..."
+                echo "--> Checking EC2 application health..."
 
-                sh """
-                    HEALTH_URL="http://${params.EC2_IP}:${TARGET_PORT}/actuator/health"
+                powershell(
+                    script: """
+                        \$healthUrl = "http://${params.EC2_IP}:${params.APP_PORT}/actuator/health"
+                        \$maxAttempts = 12
+                        \$sleepSeconds = 5
+                        \$success = \$false
 
-                    MAX_ATTEMPTS=12
-                    SLEEP_SECONDS=5
-                    SUCCESS=false
+                        Write-Host "Health URL: \$healthUrl"
 
-                    echo "Polling health endpoint: \$HEALTH_URL"
+                        for (\$i = 1; \$i -le \$maxAttempts; \$i++) {
+                            Write-Host "Attempt \$i of \$maxAttempts..."
 
-                    for i in \$(seq 1 \$MAX_ATTEMPTS); do
+                            try {
+                                \$response = Invoke-WebRequest `
+                                    -Uri \$healthUrl `
+                                    -UseBasicParsing `
+                                    -TimeoutSec 10 `
+                                    -ErrorAction Stop
 
-                        echo "Attempt \$i of \$MAX_ATTEMPTS: Checking application health..."
+                                Write-Host "HTTP Status: \$([int]\$response.StatusCode)"
 
-                        STATUS=\$(curl \
-                            -s \
-                            -o /dev/null \
-                            -w "%{http_code}" \
-                            "\$HEALTH_URL" || true)
+                                if ([int]\$response.StatusCode -eq 200) {
+                                    Write-Host "Application health check returned HTTP 200 OK."
+                                    \$success = \$true
+                                    break
+                                }
+                            }
+                            catch {
+                                Write-Host "Health check failed: \$($_.Exception.Message)"
+                            }
 
-                        if [ "\$STATUS" = "200" ]; then
+                            if (\$i -lt \$maxAttempts) {
+                                Write-Host "Retrying in \$sleepSeconds seconds..."
+                                Start-Sleep -Seconds \$sleepSeconds
+                            }
+                        }
 
-                            echo "Application health status: HTTP 200 OK"
+                        if (-not \$success) {
+                            Write-Host "=========================================================="
+                            Write-Host "APPLICATION HEALTH CHECK FAILED"
+                            Write-Host "=========================================================="
+                            exit 1
+                        }
 
-                            SUCCESS=true
-
-                            break
-                        fi
-
-                        echo "Received HTTP \$STATUS."
-                        echo "Retrying in \${SLEEP_SECONDS}s..."
-
-                        sleep \$SLEEP_SECONDS
-                    done
-
-                    if [ "\$SUCCESS" = "true" ]; then
-
-                        echo "=========================================================="
-                        echo "APPLICATION DEPLOYMENT SUCCESSFUL"
-                        echo "=========================================================="
-                        echo "Application URL:"
-                        echo "http://${params.EC2_IP}:${TARGET_PORT}"
-                        echo ""
-                        echo "Health URL:"
-                        echo "http://${params.EC2_IP}:${TARGET_PORT}/actuator/health"
-                        echo "=========================================================="
-
-                    else
-
-                        echo "=========================================================="
-                        echo "APPLICATION DEPLOYMENT FAILED"
-                        echo "Health check timed out."
-                        echo "=========================================================="
-
-                        exit 1
-                    fi
-                """
+                        Write-Host "=========================================================="
+                        Write-Host "APPLICATION DEPLOYMENT SUCCESSFUL"
+                        Write-Host "=========================================================="
+                        Write-Host "Application URL:"
+                        Write-Host "http://${params.EC2_IP}:${params.APP_PORT}"
+                        Write-Host ""
+                        Write-Host "Health URL:"
+                        Write-Host "\$healthUrl"
+                        Write-Host "=========================================================="
+                    """
+                )
             }
         }
 
@@ -327,24 +335,26 @@ pipeline {
                 dir('fooddeliveryapp') {
                     echo "--> Deploying to Kubernetes Cluster..."
 
-                    sh '''
-                        if ! command -v kubectl &> /dev/null; then
-                            echo "ERROR: kubectl command not found on Jenkins agent."
-                            exit 1
-                        fi
+                    bat '''
+                        kubectl version --client
 
-                        kubectl cluster-info || {
-                            echo "ERROR: Cannot connect to Kubernetes cluster."
-                            exit 1
-                        }
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: kubectl command not found.
+                            exit /b 1
+                        )
 
-                        kubectl apply -f k8s/configmap.yaml
-                        kubectl apply -f k8s/deployment.yaml
-                        kubectl apply -f k8s/service.yaml
+                        kubectl cluster-info
 
-                        kubectl rollout status \
-                            deployment/fooddelivery-deployment \
-                            --timeout=180s
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Cannot connect to Kubernetes cluster.
+                            exit /b 1
+                        )
+
+                        kubectl apply -f k8s\\configmap.yaml
+                        kubectl apply -f k8s\\deployment.yaml
+                        kubectl apply -f k8s\\service.yaml
+
+                        kubectl rollout status deployment/fooddelivery-deployment --timeout=180s
 
                         kubectl get svc fooddelivery-service
                     '''
@@ -376,10 +386,10 @@ pipeline {
         }
 
         cleanup {
-            echo "Cleaning up local build workspace and dangling Docker images..."
+            echo "Cleaning up local Docker images..."
 
-            sh '''
-                docker image prune -f || true
+            bat '''
+                docker image prune -f
             '''
         }
     }
