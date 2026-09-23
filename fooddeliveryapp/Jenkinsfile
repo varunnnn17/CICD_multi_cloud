@@ -16,7 +16,7 @@ pipeline {
 
         string(
             name: 'EC2_IP',
-            defaultValue: '18.234.204.150',
+            defaultValue: '3.94.128.30',
             description: 'AWS EC2 Public IP address for deployment'
         )
 
