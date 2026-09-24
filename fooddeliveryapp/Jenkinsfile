@@ -7,7 +7,7 @@ pipeline {
         string(
             name: 'EC2_IP',
             defaultValue: '100.62.122.237',
-            description: 'AWS EC2 IP address'
+            description: 'AWS EC2 public IP address'
         )
 
         string(
@@ -31,20 +31,36 @@ pipeline {
 
     environment {
 
-        DOCKERHUB_USER = 'varun1716'
-        IMAGE_NAME = 'food-delivery'
+        // ============================================================
+        // Application configuration
+        // ============================================================
 
-        APP_DIR = 'fooddeliveryapp'
+        DOCKERHUB_USER = 'varun1716'
+        IMAGE_NAME     = 'food-delivery'
+
+        APP_DIR  = 'fooddeliveryapp'
         APP_PORT = '8083'
 
+        // ============================================================
+        // Jenkins credentials
+        // ============================================================
+
         DOCKER_CRED_ID = 'dockercred1'
-        EC2_CRED_ID = 'ec2-ssh-key'
+        EC2_CRED_ID    = 'ec2-ssh-key'
+
+        // ============================================================
+        // Deployment flags
+        // ============================================================
 
         SONAR_ENABLED_VALUE = "${params.SONAR_ENABLED}"
-        K8S_ENABLED_VALUE = "${params.K8S_ENABLED}"
+        K8S_ENABLED_VALUE   = "${params.K8S_ENABLED}"
     }
 
     stages {
+
+        // ============================================================
+        // 1. ENVIRONMENT VALIDATION
+        // ============================================================
 
         stage('Environment Validation') {
 
@@ -85,6 +101,10 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // 2. MAVEN TEST
+        // ============================================================
+
         stage('Maven Test') {
 
             steps {
@@ -115,6 +135,10 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // 3. MAVEN PACKAGE
+        // ============================================================
+
         stage('Maven Package') {
 
             steps {
@@ -141,11 +165,15 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // 4. OPTIONAL SONARQUBE
+        // ============================================================
+
         stage('SonarQube Analysis') {
 
             when {
                 expression {
-                    return params.SONAR_ENABLED
+                    return params.SONAR_ENABLED == true
                 }
             }
 
@@ -157,17 +185,29 @@ pipeline {
                     echo 'RUNNING SONARQUBE ANALYSIS'
                     echo '=========================================================='
 
-                    bat '''
-                        call mvnw.cmd sonar:sonar
+                    script {
 
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: SonarQube analysis failed.
-                            exit /b 1
-                        )
-                    '''
+                        withSonarQubeEnv('sonarqube') {
+
+                            bat '''
+                                call mvnw.cmd sonar:sonar
+
+                                if %ERRORLEVEL% NEQ 0 (
+                                    echo ERROR: SonarQube analysis failed.
+                                    exit /b 1
+                                )
+
+                                echo SonarQube analysis completed successfully.
+                            '''
+                        }
+                    }
                 }
             }
         }
+
+        // ============================================================
+        // 5. DOCKER BUILD
+        // ============================================================
 
         stage('Docker Build') {
 
@@ -196,6 +236,10 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // 6. DOCKER IMAGE VALIDATION
+        // ============================================================
+
         stage('Docker Image Validation') {
 
             steps {
@@ -220,6 +264,10 @@ pipeline {
                 }
             }
         }
+
+        // ============================================================
+        // 7. DOCKER HUB PUSH
+        // ============================================================
 
         stage('Docker Hub Push') {
 
@@ -250,20 +298,24 @@ pipeline {
                         )
 
                         echo.
-                        echo Pushing image:
+                        echo ==========================================================
+                        echo Pushing build image:
                         echo ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
+                        echo ==========================================================
 
                         docker push ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Docker image push failed.
+                            echo ERROR: Docker build image push failed.
                             docker logout
                             exit /b 1
                         )
 
                         echo.
+                        echo ==========================================================
                         echo Pushing latest image:
                         echo ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:latest
+                        echo ==========================================================
 
                         docker push ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:latest
 
@@ -273,14 +325,22 @@ pipeline {
                             exit /b 1
                         )
 
+                        echo.
+                        echo ==========================================================
+                        echo Docker images pushed successfully.
+                        echo ==========================================================
+
                         docker logout
 
-                        echo.
-                        echo Docker images pushed successfully.
+                        exit /b 0
                     """
                 }
             }
         }
+
+        // ============================================================
+        // 8. DEPLOY TO AWS EC2
+        // ============================================================
 
         stage('Deploy to AWS EC2') {
 
@@ -305,211 +365,245 @@ pipeline {
 
                     dir("${env.APP_DIR}") {
 
-                        powershell(
-                            script: """
-                                \$ErrorActionPreference = 'Stop'
+                        // --------------------------------------------------------
+                        // STEP 1:
+                        // Prepare SSH key and deploy.sh using PowerShell.
+                        //
+                        // IMPORTANT:
+                        // PowerShell is NOT used to execute ssh.exe.
+                        // The actual SSH/SCP commands below are executed with BAT.
+                        // --------------------------------------------------------
 
-                                \$sourceKey = \$env:SSH_KEY_FILE
-                                \$fixedKey = Join-Path \$env:WORKSPACE 'ec2-deploy-key.pem'
+                        powershell '''
+                            $ErrorActionPreference = "Stop"
 
-                                \$ec2Ip = '${params.EC2_IP}'
-                                \$ec2User = '${params.EC2_USER}'
-                                \$credentialUser = \$env:SSH_USER
+                            Write-Host "=========================================================="
+                            Write-Host "PREPARING EC2 DEPLOYMENT FILES"
+                            Write-Host "=========================================================="
 
-                                if ([string]::IsNullOrWhiteSpace(\$credentialUser)) {
-                                    \$credentialUser = \$ec2User
-                                }
+                            # ----------------------------------------------------
+                            # Jenkins-provided SSH private key
+                            # ----------------------------------------------------
 
-                                \$image = '${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}'
+                            $sourceKey = $env:SSH_KEY_FILE
 
-                                Write-Host '=========================================================='
-                                Write-Host 'AWS EC2 DEPLOYMENT'
-                                Write-Host '=========================================================='
-                                Write-Host "EC2 Host     : \$ec2Ip"
-                                Write-Host "EC2 User     : \$credentialUser"
-                                Write-Host "Docker Image : \$image"
-                                Write-Host ''
+                            if ([string]::IsNullOrWhiteSpace($sourceKey)) {
+                                throw "SSH_KEY_FILE was not provided by Jenkins."
+                            }
 
-                                if (-not (Test-Path \$sourceKey)) {
-                                    throw "Jenkins SSH private key was not found: \$sourceKey"
-                                }
+                            if (-not (Test-Path $sourceKey)) {
+                                throw "SSH private key was not found: $sourceKey"
+                            }
 
-                                # --------------------------------------------------
-                                # Prepare SSH private key
-                                # --------------------------------------------------
+                            # Fixed key path inside the Jenkins workspace.
+                            $fixedKey = Join-Path (Get-Location) "ec2-deploy-key.pem"
 
-                                Write-Host 'Preparing SSH private key...'
+                            Write-Host "Copying SSH private key..."
 
-                                Copy-Item -Path \$sourceKey -Destination \$fixedKey -Force
+                            Copy-Item `
+                                -Path $sourceKey `
+                                -Destination $fixedKey `
+                                -Force
 
-                                if (-not (Test-Path \$fixedKey)) {
-                                    throw 'Failed to create deployment SSH key.'
-                                }
+                            # ----------------------------------------------------
+                            # Fix Windows permissions for OpenSSH.
+                            #
+                            # Jenkins runs as LocalSystem.
+                            # ----------------------------------------------------
 
-                                Write-Host 'Removing inherited permissions...'
+                            Write-Host "Removing inherited permissions..."
 
-                                & icacls \$fixedKey /inheritance:r
+                            icacls $fixedKey /inheritance:r | Out-Host
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'Failed to remove inherited permissions.'
-                                }
+                            Write-Host "Removing BUILTIN Users permissions..."
 
-                                Write-Host 'Removing BUILTIN Users permissions...'
+                            icacls $fixedKey /remove:g "BUILTIN\\Users" 2>$null | Out-Host
 
-                                & icacls \$fixedKey /remove:g 'BUILTIN\\Users' 2>\$null
+                            Write-Host "Removing Everyone permissions..."
 
-                                Write-Host 'Removing Everyone permissions...'
+                            icacls $fixedKey /remove:g "Everyone" 2>$null | Out-Host
 
-                                & icacls \$fixedKey /remove:g 'Everyone' 2>\$null
+                            Write-Host "Granting LocalSystem full access..."
 
-                                Write-Host 'Granting LocalSystem full access...'
+                            icacls $fixedKey /grant:r "SYSTEM:(F)" | Out-Host
 
-                                & icacls \$fixedKey /grant:r 'NT AUTHORITY\\SYSTEM:(F)'
+                            Write-Host "Granting Administrators full access..."
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'Failed to grant LocalSystem permissions.'
-                                }
+                            icacls $fixedKey /grant:r "Administrators:(F)" | Out-Host
 
-                                Write-Host 'Granting Administrators full access...'
+                            Write-Host ""
+                            Write-Host "Current SSH key permissions:"
+                            icacls $fixedKey | Out-Host
 
-                                & icacls \$fixedKey /grant:r 'BUILTIN\\Administrators:(F)'
+                            # ----------------------------------------------------
+                            # Prepare deploy.sh for Linux.
+                            #
+                            # Convert CRLF / CR to LF.
+                            # Write UTF-8 without BOM.
+                            # ----------------------------------------------------
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'Failed to grant Administrators permissions.'
-                                }
+                            $deployScript = Join-Path (Get-Location) "deploy.sh"
 
-                                Write-Host ''
-                                Write-Host 'Current SSH key permissions:'
+                            if (-not (Test-Path $deployScript)) {
+                                throw "deploy.sh was not found: $deployScript"
+                            }
 
-                                & icacls \$fixedKey
+                            Write-Host ""
+                            Write-Host "Preparing deploy.sh for Linux..."
 
-                                # --------------------------------------------------
-                                # Test SSH connection
-                                # --------------------------------------------------
+                            $bytes = [System.IO.File]::ReadAllBytes($deployScript)
 
-                                Write-Host ''
-                                Write-Host '=========================================================='
-                                Write-Host 'TESTING SSH CONNECTION'
-                                Write-Host '=========================================================='
+                            $text = [System.Text.Encoding]::UTF8.GetString($bytes)
 
-                                & ssh `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i \$fixedKey `
-                                    "\${credentialUser}@\${ec2Ip}" `
-                                    'echo SSH_CONNECTION_SUCCESS'
+                            # Remove UTF-8 BOM if one exists.
+                            $text = $text.TrimStart([char]0xFEFF)
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'SSH connection to EC2 failed.'
-                                }
+                            # Convert CRLF to LF.
+                            $text = $text.Replace("`r`n", "`n")
 
-                                Write-Host 'SSH connection successful.'
+                            # Convert remaining CR to LF.
+                            $text = $text.Replace("`r", "`n")
 
-                                # --------------------------------------------------
-                                # Convert deploy.sh from Windows CRLF to Linux LF
-                                # --------------------------------------------------
+                            # Write UTF-8 without BOM.
+                            [System.IO.File]::WriteAllText(
+                                $deployScript,
+                                $text,
+                                [System.Text.UTF8Encoding]::new($false)
+                            )
 
-                                Write-Host ''
-                                Write-Host '=========================================================='
-                                Write-Host 'PREPARING deploy.sh FOR LINUX'
-                                Write-Host '=========================================================='
+                            Write-Host "deploy.sh converted to Unix LF line endings."
 
-                                \$deployScript = Join-Path (Get-Location) 'deploy.sh'
+                            # ----------------------------------------------------
+                            # Verify the first bytes of deploy.sh.
+                            # ----------------------------------------------------
 
-                                if (-not (Test-Path \$deployScript)) {
-                                    throw "deploy.sh was not found: \$deployScript"
-                                }
+                            $verifyBytes = [System.IO.File]::ReadAllBytes($deployScript)
 
-                                \$bytes = [System.IO.File]::ReadAllBytes(\$deployScript)
+                            if ($verifyBytes.Length -lt 2) {
+                                throw "deploy.sh is unexpectedly empty."
+                            }
 
-                                \$text = [System.Text.Encoding]::UTF8.GetString(\$bytes)
+                            Write-Host "deploy.sh size: $($verifyBytes.Length) bytes"
 
-                                \$text = \$text.Replace("`r`n", "`n")
-                                \$text = \$text.Replace("`r", "`n")
+                            Write-Host ""
+                            Write-Host "EC2 deployment files prepared successfully."
+                        '''
 
-                                [System.IO.File]::WriteAllText(
-                                    \$deployScript,
-                                    \$text,
-                                    [System.Text.UTF8Encoding]::new(\$false)
-                                )
+                        // --------------------------------------------------------
+                        // STEP 2:
+                        // Test SSH using Windows BAT.
+                        //
+                        // This intentionally uses BAT instead of PowerShell
+                        // because the previous build failed when PowerShell
+                        // attempted to launch ssh.exe.
+                        // --------------------------------------------------------
 
-                                Write-Host 'deploy.sh converted to Linux LF line endings.'
+                        bat """
+                            echo.
+                            echo ==========================================================
+                            echo TESTING SSH CONNECTION
+                            echo ==========================================================
 
-                                # --------------------------------------------------
-                                # Copy deploy.sh to EC2
-                                # --------------------------------------------------
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" ^
+                                "${params.EC2_USER}@${params.EC2_IP}" ^
+                                "echo SSH_CONNECTION_SUCCESS"
 
-                                Write-Host ''
-                                Write-Host '=========================================================='
-                                Write-Host 'COPYING deploy.sh TO EC2'
-                                Write-Host '=========================================================='
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SSH connection to EC2 failed.
+                                del /f /q "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" >nul 2>&1
+                                exit /b 1
+                            )
 
-                                \$remoteDeployPath = "/home/\${credentialUser}/deploy.sh"
+                            echo.
+                            echo SSH connection successful.
+                        """
 
-                                & scp `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i \$fixedKey `
-                                    \$deployScript `
-                                    "\${credentialUser}@\${ec2Ip}:\${remoteDeployPath}"
+                        // --------------------------------------------------------
+                        // STEP 3:
+                        // Copy deploy.sh to EC2.
+                        // --------------------------------------------------------
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'SCP failed.'
-                                }
+                        bat """
+                            echo.
+                            echo ==========================================================
+                            echo COPYING DEPLOYMENT SCRIPT TO EC2
+                            echo ==========================================================
 
-                                Write-Host 'deploy.sh copied successfully.'
+                            scp ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" ^
+                                "deploy.sh" ^
+                                "${params.EC2_USER}@${params.EC2_IP}:/home/${params.EC2_USER}/deploy.sh"
 
-                                # --------------------------------------------------
-                                # Run deployment on EC2
-                                # --------------------------------------------------
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SCP failed.
+                                del /f /q "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" >nul 2>&1
+                                exit /b 1
+                            )
 
-                                Write-Host ''
-                                Write-Host '=========================================================='
-                                Write-Host 'RUNNING DEPLOYMENT ON EC2'
-                                Write-Host '=========================================================='
+                            echo.
+                            echo deploy.sh copied successfully.
+                        """
 
-                                \$remoteCommand = "chmod +x \${remoteDeployPath} && \${remoteDeployPath} \$image"
+                        // --------------------------------------------------------
+                        // STEP 4:
+                        // Run deployment on EC2.
+                        //
+                        // No /actuator/health check is used here.
+                        // deploy.sh only verifies that the Docker container
+                        // itself is running.
+                        // --------------------------------------------------------
 
-                                & ssh `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i \$fixedKey `
-                                    "\${credentialUser}@\${ec2Ip}" `
-                                    \$remoteCommand
+                        bat """
+                            echo.
+                            echo ==========================================================
+                            echo RUNNING DEPLOYMENT ON EC2
+                            echo ==========================================================
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw 'EC2 deployment failed.'
-                                }
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" ^
+                                "${params.EC2_USER}@${params.EC2_IP}" ^
+                                "chmod +x /home/${params.EC2_USER}/deploy.sh && /home/${params.EC2_USER}/deploy.sh ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
 
-                                Write-Host ''
-                                Write-Host '=========================================================='
-                                Write-Host 'EC2 DEPLOYMENT SUCCESSFUL'
-                                Write-Host '=========================================================='
-                                Write-Host "Application URL:"
-                                Write-Host "http://\${ec2Ip}:${env.APP_PORT}"
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: EC2 deployment failed.
+                                del /f /q "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" >nul 2>&1
+                                exit /b 1
+                            )
 
-                                # --------------------------------------------------
-                                # Remove temporary SSH key
-                                # --------------------------------------------------
+                            echo.
+                            echo ==========================================================
+                            echo EC2 DEPLOYMENT SUCCESSFUL
+                            echo ==========================================================
 
-                                if (Test-Path \$fixedKey) {
-                                    Remove-Item \$fixedKey -Force -ErrorAction SilentlyContinue
-                                }
-                            """
-                        )
+                            echo Application URL:
+                            echo http://${params.EC2_IP}:${env.APP_PORT}
+
+                            del /f /q "${env.WORKSPACE}\\${env.APP_DIR}\\ec2-deploy-key.pem" >nul 2>&1
+                        """
                     }
                 }
             }
         }
 
+        // ============================================================
+        // 9. OPTIONAL KUBERNETES DEPLOYMENT
+        // ============================================================
+
         stage('Kubernetes Deploy') {
 
             when {
                 expression {
-                    return params.K8S_ENABLED
+                    return params.K8S_ENABLED == true
                 }
             }
 
@@ -520,10 +614,15 @@ pipeline {
                 echo '=========================================================='
 
                 echo 'Kubernetes deployment is enabled.'
-                echo 'Add your Kubernetes deployment commands here.'
+
+                echo 'Kubernetes deployment commands can be added here.'
             }
         }
     }
+
+    // ================================================================
+    // POST ACTIONS
+    // ================================================================
 
     post {
 
@@ -532,7 +631,7 @@ pipeline {
             echo "CI/CD Pipeline finished for Build #${env.BUILD_NUMBER}"
 
             echo '=========================================================='
-            echo 'Cleaning unused local Docker images...'
+            echo 'CLEANING UNUSED LOCAL DOCKER IMAGES'
             echo '=========================================================='
 
             bat '''
