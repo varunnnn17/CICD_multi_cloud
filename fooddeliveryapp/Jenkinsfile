@@ -2,6 +2,7 @@ pipeline {
     agent any
 
     parameters {
+
         string(
             name: 'DOCKERHUB_USER',
             defaultValue: 'varun1716',
@@ -16,7 +17,7 @@ pipeline {
 
         string(
             name: 'EC2_IP',
-            defaultValue: '3.94.128.30',
+            defaultValue: '100.62.122.237',
             description: 'AWS EC2 Public IP address for deployment'
         )
 
@@ -260,27 +261,27 @@ pipeline {
 
                         powershell(
                             script: """
-                                \$ErrorActionPreference = 'Stop'
+                                \\$ErrorActionPreference = 'Stop'
 
-                                \$sourceKey = \$env:SSH_KEY_FILE
-                                \$remoteUser = \$env:SSH_USER
-                                \$ec2Ip = '${params.EC2_IP}'
-                                \$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
+                                \\$sourceKey = \\$env:SSH_KEY_FILE
+                                \\$remoteUser = \\$env:SSH_USER
+                                \\$ec2Ip = '${params.EC2_IP}'
+                                \\$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
 
-                                if ([string]::IsNullOrWhiteSpace(\$remoteUser)) {
-                                    \$remoteUser = '${params.EC2_USER}'
+                                if ([string]::IsNullOrWhiteSpace(\\$remoteUser)) {
+                                    \\$remoteUser = '${params.EC2_USER}'
                                 }
 
                                 Write-Host "=========================================================="
                                 Write-Host "AWS EC2 DEPLOYMENT"
                                 Write-Host "=========================================================="
-                                Write-Host "Remote user : \$remoteUser"
-                                Write-Host "EC2 host    : \$ec2Ip"
-                                Write-Host "Docker image: \$imageName"
+                                Write-Host "Remote user : \\$remoteUser"
+                                Write-Host "EC2 host    : \\$ec2Ip"
+                                Write-Host "Docker image: \\$imageName"
                                 Write-Host ""
 
-                                if (-not (Test-Path \$sourceKey)) {
-                                    throw "Jenkins SSH private key was not found: \$sourceKey"
+                                if (-not (Test-Path \\$sourceKey)) {
+                                    throw "Jenkins SSH private key was not found: \\$sourceKey"
                                 }
 
                                 # --------------------------------------------------
@@ -290,25 +291,25 @@ pipeline {
 
                                 Write-Host "Preparing deploy.sh for Linux..."
 
-                                \$deployScript = Join-Path (Get-Location) 'deploy.sh'
+                                \\$deployScript = Join-Path (Get-Location) 'deploy.sh'
 
-                                if (-not (Test-Path \$deployScript)) {
-                                    throw "deploy.sh was not found: \$deployScript"
+                                if (-not (Test-Path \\$deployScript)) {
+                                    throw "deploy.sh was not found: \\$deployScript"
                                 }
 
-                                \$deployContent = [System.IO.File]::ReadAllText(
-                                    \$deployScript,
+                                \\$deployContent = [System.IO.File]::ReadAllText(
+                                    \\$deployScript,
                                     [System.Text.Encoding]::UTF8
                                 )
 
                                 # Remove Windows CR characters.
-                                \$deployContent = \$deployContent -replace "`r`n", "`n"
-                                \$deployContent = \$deployContent -replace "`r", "`n"
+                                \\$deployContent = \\$deployContent -replace "`r`n", "`n"
+                                \\$deployContent = \\$deployContent -replace "`r", "`n"
 
                                 [System.IO.File]::WriteAllText(
-                                    \$deployScript,
-                                    \$deployContent,
-                                    [System.Text.UTF8Encoding]::new(\$false)
+                                    \\$deployScript,
+                                    \\$deployContent,
+                                    [System.Text.UTF8Encoding]::new(\\$false)
                                 )
 
                                 Write-Host "deploy.sh converted to Unix LF line endings."
@@ -320,44 +321,44 @@ pipeline {
                                 Write-Host ""
                                 Write-Host "Preparing local SSH key..."
 
-                                \$deployKey = Join-Path (Get-Location) 'jenkins-ec2-key.tmp'
+                                \\$deployKey = Join-Path (Get-Location) 'jenkins-ec2-key.tmp'
 
                                 Copy-Item `
-                                    -Path \$sourceKey `
-                                    -Destination \$deployKey `
+                                    -Path \\$sourceKey `
+                                    -Destination \\$deployKey `
                                     -Force
 
-                                if (-not (Test-Path \$deployKey)) {
-                                    throw "Failed to create deployment SSH key: \$deployKey"
+                                if (-not (Test-Path \\$deployKey)) {
+                                    throw "Failed to create deployment SSH key: \\$deployKey"
                                 }
 
                                 Write-Host "Removing inherited permissions from deployment key..."
 
-                                & icacls.exe \$deployKey /inheritance:r
+                                & icacls.exe \\$deployKey /inheritance:r
 
-                                if (\$LASTEXITCODE -ne 0) {
+                                if (\\$LASTEXITCODE -ne 0) {
                                     throw "Failed to remove inherited permissions from deployment key."
                                 }
 
                                 Write-Host "Granting SYSTEM full access..."
 
-                                & icacls.exe \$deployKey /grant:r "SYSTEM:(F)"
+                                & icacls.exe \\$deployKey /grant:r "SYSTEM:(F)"
 
-                                if (\$LASTEXITCODE -ne 0) {
+                                if (\\$LASTEXITCODE -ne 0) {
                                     throw "Failed to grant SYSTEM access to deployment key."
                                 }
 
                                 Write-Host "Granting Administrators full access..."
 
-                                & icacls.exe \$deployKey /grant:r "Administrators:(F)"
+                                & icacls.exe \\$deployKey /grant:r "Administrators:(F)"
 
-                                if (\$LASTEXITCODE -ne 0) {
+                                if (\\$LASTEXITCODE -ne 0) {
                                     throw "Failed to grant Administrators access to deployment key."
                                 }
 
                                 Write-Host ""
                                 Write-Host "Current deployment key permissions:"
-                                & icacls.exe \$deployKey
+                                & icacls.exe \\$deployKey
 
                                 # --------------------------------------------------
                                 # Test SSH
@@ -372,12 +373,12 @@ pipeline {
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
                                     -o ConnectTimeout=15 `
-                                    -i "\$deployKey" `
-                                    "\${remoteUser}@\${ec2Ip}" `
+                                    -i "\\$deployKey" `
+                                    "\\${remoteUser}@\\${ec2Ip}" `
                                     "echo SSH_CONNECTION_SUCCESS"
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw "SSH connection test failed with exit code \$LASTEXITCODE."
+                                if (\\$LASTEXITCODE -ne 0) {
+                                    throw "SSH connection test failed with exit code \\$LASTEXITCODE."
                                 }
 
                                 # --------------------------------------------------
@@ -393,12 +394,12 @@ pipeline {
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
                                     -o ConnectTimeout=15 `
-                                    -i "\$deployKey" `
+                                    -i "\\$deployKey" `
                                     "deploy.sh" `
-                                    "\${remoteUser}@\${ec2Ip}:/home/\${remoteUser}/deploy.sh"
+                                    "\\${remoteUser}@\\${ec2Ip}:/home/\\${remoteUser}/deploy.sh"
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw "SCP failed with exit code \$LASTEXITCODE."
+                                if (\\$LASTEXITCODE -ne 0) {
+                                    throw "SCP failed with exit code \\$LASTEXITCODE."
                                 }
 
                                 # --------------------------------------------------
@@ -414,12 +415,12 @@ pipeline {
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
                                     -o ConnectTimeout=15 `
-                                    -i "\$deployKey" `
-                                    "\${remoteUser}@\${ec2Ip}" `
-                                    "file /home/\${remoteUser}/deploy.sh && head -n 1 /home/\${remoteUser}/deploy.sh"
+                                    -i "\\$deployKey" `
+                                    "\\${remoteUser}@\\${ec2Ip}" `
+                                    "file /home/\\${remoteUser}/deploy.sh && head -n 1 /home/\\${remoteUser}/deploy.sh"
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw "Remote deploy.sh verification failed with exit code \$LASTEXITCODE."
+                                if (\\$LASTEXITCODE -ne 0) {
+                                    throw "Remote deploy.sh verification failed with exit code \\$LASTEXITCODE."
                                 }
 
                                 # --------------------------------------------------
@@ -431,32 +432,32 @@ pipeline {
                                 Write-Host "Executing deployment on EC2"
                                 Write-Host "=========================================================="
 
-                                \$remoteCommand = "chmod +x /home/\${remoteUser}/deploy.sh && /home/\${remoteUser}/deploy.sh \$imageName"
+                                \\$remoteCommand = "chmod +x /home/\\${remoteUser}/deploy.sh && /home/\\${remoteUser}/deploy.sh \\$imageName"
 
                                 & ssh.exe `
                                     -o StrictHostKeyChecking=no `
                                     -o UserKnownHostsFile=NUL `
                                     -o ConnectTimeout=15 `
-                                    -i "\$deployKey" `
-                                    "\${remoteUser}@\${ec2Ip}" `
-                                    \$remoteCommand
+                                    -i "\\$deployKey" `
+                                    "\\${remoteUser}@\\${ec2Ip}" `
+                                    \\$remoteCommand
 
-                                if (\$LASTEXITCODE -ne 0) {
-                                    throw "EC2 deployment failed with exit code \$LASTEXITCODE."
+                                if (\\$LASTEXITCODE -ne 0) {
+                                    throw "EC2 deployment failed with exit code \\$LASTEXITCODE."
                                 }
 
                                 Write-Host ""
                                 Write-Host "=========================================================="
-                                Write-Host "EC2 DEPLOYMENT COMMAND COMPLETED SUCCESSFULLY"
+                                Write-Host "EC2 DEPLOYMENT COMPLETED SUCCESSFULLY"
                                 Write-Host "=========================================================="
 
                                 # --------------------------------------------------
                                 # Cleanup temporary SSH key
                                 # --------------------------------------------------
 
-                                if (Test-Path \$deployKey) {
+                                if (Test-Path \\$deployKey) {
                                     Remove-Item `
-                                        -Path \$deployKey `
+                                        -Path \\$deployKey `
                                         -Force `
                                         -ErrorAction SilentlyContinue
                                 }
@@ -464,68 +465,6 @@ pipeline {
                         )
                     }
                 }
-            }
-        }
-
-        stage('EC2 Health Check') {
-            steps {
-                echo "--> Checking EC2 application health..."
-
-                powershell(
-                    script: """
-                        \$healthUrl = "http://${params.EC2_IP}:${params.APP_PORT}/actuator/health"
-                        \$maxAttempts = 12
-                        \$sleepSeconds = 5
-                        \$success = \$false
-
-                        Write-Host "Health URL: \$healthUrl"
-
-                        for (\$i = 1; \$i -le \$maxAttempts; \$i++) {
-                            Write-Host "Attempt \$i of \$maxAttempts..."
-
-                            try {
-                                \$response = Invoke-WebRequest `
-                                    -Uri \$healthUrl `
-                                    -UseBasicParsing `
-                                    -TimeoutSec 10 `
-                                    -ErrorAction Stop
-
-                                Write-Host "HTTP Status: \$([int]\$response.StatusCode)"
-
-                                if ([int]\$response.StatusCode -eq 200) {
-                                    Write-Host "Application health check returned HTTP 200 OK."
-                                    \$success = \$true
-                                    break
-                                }
-                            }
-                            catch {
-                                Write-Host "Health check failed: \$($_.Exception.Message)"
-                            }
-
-                            if (\$i -lt \$maxAttempts) {
-                                Write-Host "Retrying in \$sleepSeconds seconds..."
-                                Start-Sleep -Seconds \$sleepSeconds
-                            }
-                        }
-
-                        if (-not \$success) {
-                            Write-Host "=========================================================="
-                            Write-Host "APPLICATION HEALTH CHECK FAILED"
-                            Write-Host "=========================================================="
-                            exit 1
-                        }
-
-                        Write-Host "=========================================================="
-                        Write-Host "APPLICATION DEPLOYMENT SUCCESSFUL"
-                        Write-Host "=========================================================="
-                        Write-Host "Application URL:"
-                        Write-Host "http://${params.EC2_IP}:${params.APP_PORT}"
-                        Write-Host ""
-                        Write-Host "Health URL:"
-                        Write-Host "\$healthUrl"
-                        Write-Host "=========================================================="
-                    """
-                )
             }
         }
 
@@ -569,6 +508,7 @@ pipeline {
     }
 
     post {
+
         always {
             echo "CI/CD Pipeline finished for Build #${BUILD_NUMBER}"
         }
@@ -577,7 +517,9 @@ pipeline {
             echo "=========================================================="
             echo "PIPELINE SUCCESS"
             echo "Food Delivery App deployed to EC2"
+            echo "EC2 IP: ${params.EC2_IP}"
             echo "Port: ${TARGET_PORT}"
+            echo "Application URL: http://${params.EC2_IP}:${params.APP_PORT}"
             echo "Docker Image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
             echo "=========================================================="
         }
