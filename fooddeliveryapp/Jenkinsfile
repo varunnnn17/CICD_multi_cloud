@@ -1,36 +1,24 @@
 pipeline {
+
     agent any
 
     parameters {
-
-        string(
-            name: 'DOCKERHUB_USER',
-            defaultValue: 'varun1716',
-            description: 'Docker Hub username / namespace'
-        )
-
-        string(
-            name: 'IMAGE_NAME',
-            defaultValue: 'food-delivery',
-            description: 'Docker image repository name'
-        )
-
         string(
             name: 'EC2_IP',
             defaultValue: '100.62.122.237',
-            description: 'AWS EC2 IP address for deployment'
+            description: 'AWS EC2 IP address'
         )
 
         string(
             name: 'EC2_USER',
             defaultValue: 'ubuntu',
-            description: 'SSH username for EC2 instance'
+            description: 'AWS EC2 SSH username'
         )
 
-        string(
-            name: 'APP_PORT',
-            defaultValue: '8083',
-            description: 'Application port'
+        booleanParam(
+            name: 'SONAR_ENABLED',
+            defaultValue: false,
+            description: 'Run SonarQube analysis'
         )
 
         booleanParam(
@@ -38,36 +26,39 @@ pipeline {
             defaultValue: false,
             description: 'Deploy to Kubernetes'
         )
-
-        booleanParam(
-            name: 'SONAR_ENABLED',
-            defaultValue: false,
-            description: 'Run SonarQube code analysis'
-        )
     }
 
     environment {
-        APP_NAME        = 'food-delivery'
-        DOCKER_CRED_ID  = 'dockercred1'
-        EC2_CRED_ID     = 'ec2-ssh-key'
-        FULL_IMAGE_NAME = "${params.DOCKERHUB_USER}/${params.IMAGE_NAME}"
-        TARGET_PORT     = "${params.APP_PORT}"
+
+        DOCKERHUB_USER = 'varun1716'
+        IMAGE_NAME = 'food-delivery'
+
+        APP_DIR = 'fooddeliveryapp'
+        APP_PORT = '8083'
+
+        DOCKER_CRED_ID = 'dockercred1'
+        EC2_CRED_ID = 'ec2-ssh-key'
+
+        SONAR_ENABLED_VALUE = "${params.SONAR_ENABLED}"
+        K8S_ENABLED_VALUE = "${params.K8S_ENABLED}"
     }
 
     stages {
 
         stage('Environment Validation') {
+
             steps {
-                echo "=========================================================="
-                echo "CI/CD ENVIRONMENT VALIDATION"
-                echo "=========================================================="
+
+                echo '=========================================================='
+                echo 'CI/CD ENVIRONMENT VALIDATION'
+                echo '=========================================================='
+
                 echo "Jenkins Agent       : Windows"
-                echo "Application Dir     : fooddeliveryapp"
-                echo "Application Port    : ${params.APP_PORT}"
-                echo "Docker Image        : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                echo "Application Dir     : ${env.APP_DIR}"
+                echo "Application Port    : ${env.APP_PORT}"
+                echo "Docker Image        : ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
                 echo "EC2 Host            : ${params.EC2_IP}"
                 echo "EC2 User            : ${params.EC2_USER}"
-                echo "=========================================================="
 
                 bat '''
                     echo.
@@ -94,12 +85,14 @@ pipeline {
         }
 
         stage('Maven Test') {
-            steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "RUNNING MAVEN TESTS"
-                    echo "=========================================================="
+            steps {
+
+                dir("${env.APP_DIR}") {
+
+                    echo '=========================================================='
+                    echo 'RUNNING MAVEN TESTS'
+                    echo '=========================================================='
 
                     bat '''
                         if not exist mvnw.cmd (
@@ -122,12 +115,14 @@ pipeline {
         }
 
         stage('Maven Package') {
-            steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "PACKAGING SPRING BOOT APPLICATION"
-                    echo "=========================================================="
+            steps {
+
+                dir("${env.APP_DIR}") {
+
+                    echo '=========================================================='
+                    echo 'PACKAGING SPRING BOOT APPLICATION'
+                    echo '=========================================================='
 
                     bat '''
                         call mvnw.cmd clean package -DskipTests=true
@@ -146,6 +141,7 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
+
             when {
                 expression {
                     return params.SONAR_ENABLED
@@ -153,41 +149,39 @@ pipeline {
             }
 
             steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "SONARQUBE ANALYSIS"
-                    echo "=========================================================="
+                dir("${env.APP_DIR}") {
 
-                    withSonarQubeEnv('sonarqube') {
+                    echo '=========================================================='
+                    echo 'RUNNING SONARQUBE ANALYSIS'
+                    echo '=========================================================='
 
-                        bat '''
-                            call mvnw.cmd sonar:sonar ^
-                                -Dsonar.projectKey=food-delivery-app ^
-                                -Dsonar.projectName=food-delivery-app
+                    bat '''
+                        call mvnw.cmd sonar:sonar
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: SonarQube analysis failed.
-                                exit /b 1
-                            )
-                        '''
-                    }
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: SonarQube analysis failed.
+                            exit /b 1
+                        )
+                    '''
                 }
             }
         }
 
         stage('Docker Build') {
-            steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "BUILDING DOCKER IMAGE"
-                    echo "=========================================================="
+            steps {
+
+                dir("${env.APP_DIR}") {
+
+                    echo '=========================================================='
+                    echo 'BUILDING DOCKER IMAGE'
+                    echo '=========================================================='
 
                     bat """
                         docker build ^
-                            -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} ^
-                            -t ${FULL_IMAGE_NAME}:latest .
+                            -t ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER} ^
+                            -t ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:latest .
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker build failed.
@@ -202,15 +196,17 @@ pipeline {
         }
 
         stage('Docker Image Validation') {
-            steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "VALIDATING DOCKER IMAGE"
-                    echo "=========================================================="
+            steps {
+
+                dir("${env.APP_DIR}") {
+
+                    echo '=========================================================='
+                    echo 'VALIDATING DOCKER IMAGE'
+                    echo '=========================================================='
 
                     bat """
-                        docker image inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
+                        docker image inspect ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker image validation failed.
@@ -225,15 +221,16 @@ pipeline {
         }
 
         stage('Docker Hub Push') {
+
             steps {
 
-                echo "=========================================================="
-                echo "PUSHING DOCKER IMAGE TO DOCKER HUB"
-                echo "=========================================================="
+                echo '=========================================================='
+                echo 'PUSHING DOCKER IMAGE TO DOCKER HUB'
+                echo '=========================================================='
 
                 withCredentials([
                     usernamePassword(
-                        credentialsId: env.DOCKER_CRED_ID,
+                        credentialsId: "${env.DOCKER_CRED_ID}",
                         usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASS'
                     )
@@ -253,9 +250,9 @@ pipeline {
 
                         echo.
                         echo Pushing image:
-                        echo ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
+                        echo ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
 
-                        docker push ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
+                        docker push ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker image push failed.
@@ -265,9 +262,9 @@ pipeline {
 
                         echo.
                         echo Pushing latest image:
-                        echo ${FULL_IMAGE_NAME}:latest
+                        echo ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:latest
 
-                        docker push ${FULL_IMAGE_NAME}:latest
+                        docker push ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:latest
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker latest image push failed.
@@ -285,26 +282,27 @@ pipeline {
         }
 
         stage('Deploy to AWS EC2') {
+
             steps {
 
-                echo "=========================================================="
-                echo "DEPLOYING TO AWS EC2"
-                echo "=========================================================="
+                echo '=========================================================='
+                echo 'DEPLOYING TO AWS EC2'
+                echo '=========================================================='
+
                 echo "EC2 IP       : ${params.EC2_IP}"
                 echo "EC2 User     : ${params.EC2_USER}"
-                echo "Application  : ${params.APP_PORT}"
-                echo "Docker Image : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-                echo "=========================================================="
+                echo "Application  : ${env.APP_PORT}"
+                echo "Docker Image : ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
 
                 withCredentials([
                     sshUserPrivateKey(
-                        credentialsId: env.EC2_CRED_ID,
+                        credentialsId: "${env.EC2_CRED_ID}",
                         keyFileVariable: 'SSH_KEY_FILE',
                         usernameVariable: 'SSH_USER'
                     )
                 ]) {
 
-                    dir('fooddeliveryapp') {
+                    dir("${env.APP_DIR}") {
 
                         bat """
                             echo.
@@ -379,7 +377,7 @@ pipeline {
                                 -o UserKnownHostsFile=NUL ^
                                 -o ConnectTimeout=15 ^
                                 -i "%FIXED_KEY%" ^
-                                "%SSH_USER%@${params.EC2_IP}" ^
+                                "${params.EC2_USER}@${params.EC2_IP}" ^
                                 "echo SSH_CONNECTION_SUCCESS"
 
                             if %ERRORLEVEL% NEQ 0 (
@@ -393,6 +391,22 @@ pipeline {
 
                             echo.
                             echo ==========================================================
+                            echo PREPARING deploy.sh FOR LINUX
+                            echo ==========================================================
+
+                            powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+                                "\$path = 'deploy.sh'; \$content = [System.IO.File]::ReadAllText(\$path); [System.IO.File]::WriteAllText(\$path, (\$content -replace "`r`n","`n" -replace "`r","`n"), (New-Object System.Text.UTF8Encoding(\$false)))"
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: Failed to convert deploy.sh to Linux line endings.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
+                                exit /b 1
+                            )
+
+                            echo deploy.sh converted to Linux line endings successfully.
+
+                            echo.
+                            echo ==========================================================
                             echo COPYING deploy.sh TO EC2
                             echo ==========================================================
 
@@ -402,7 +416,7 @@ pipeline {
                                 -o ConnectTimeout=15 ^
                                 -i "%FIXED_KEY%" ^
                                 "deploy.sh" ^
-                                "%SSH_USER%@${params.EC2_IP}:/home/%SSH_USER%/deploy.sh"
+                                "${params.EC2_USER}@${params.EC2_IP}:/home/${params.EC2_USER}/deploy.sh"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: SCP failed.
@@ -423,8 +437,8 @@ pipeline {
                                 -o UserKnownHostsFile=NUL ^
                                 -o ConnectTimeout=15 ^
                                 -i "%FIXED_KEY%" ^
-                                "%SSH_USER%@${params.EC2_IP}" ^
-                                "chmod +x /home/%SSH_USER%/deploy.sh && /home/%SSH_USER%/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                                "${params.EC2_USER}@${params.EC2_IP}" ^
+                                "chmod +x /home/${params.EC2_USER}/deploy.sh && /home/${params.EC2_USER}/deploy.sh ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: EC2 deployment failed.
@@ -436,15 +450,10 @@ pipeline {
                             echo ==========================================================
                             echo EC2 DEPLOYMENT SUCCESSFUL
                             echo ==========================================================
-
-                            echo.
                             echo Application URL:
-                            echo http://${params.EC2_IP}:${params.APP_PORT}
+                            echo http://${params.EC2_IP}:${env.APP_PORT}
 
                             del /f /q "%FIXED_KEY%" >nul 2>&1
-
-                            echo.
-                            echo Temporary SSH key removed.
                         """
                     }
                 }
@@ -452,6 +461,7 @@ pipeline {
         }
 
         stage('Kubernetes Deploy') {
+
             when {
                 expression {
                     return params.K8S_ENABLED
@@ -459,36 +469,13 @@ pipeline {
             }
 
             steps {
-                dir('fooddeliveryapp') {
 
-                    echo "=========================================================="
-                    echo "KUBERNETES DEPLOYMENT"
-                    echo "=========================================================="
+                echo '=========================================================='
+                echo 'KUBERNETES DEPLOYMENT'
+                echo '=========================================================='
 
-                    bat '''
-                        kubectl version --client
-
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: kubectl command not found.
-                            exit /b 1
-                        )
-
-                        kubectl cluster-info
-
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Cannot connect to Kubernetes cluster.
-                            exit /b 1
-                        )
-
-                        kubectl apply -f k8s\\configmap.yaml
-                        kubectl apply -f k8s\\deployment.yaml
-                        kubectl apply -f k8s\\service.yaml
-
-                        kubectl rollout status deployment/fooddelivery-deployment --timeout=180s
-
-                        kubectl get svc fooddelivery-service
-                    '''
-                }
+                echo 'Kubernetes deployment is enabled.'
+                echo 'Add your Kubernetes deployment commands here.'
             }
         }
     }
@@ -496,34 +483,37 @@ pipeline {
     post {
 
         always {
-            echo "CI/CD Pipeline finished for Build #${BUILD_NUMBER}"
-        }
 
-        success {
-            echo "=========================================================="
-            echo "PIPELINE SUCCESS"
-            echo "=========================================================="
-            echo "Food Delivery App deployed successfully."
-            echo "EC2 IP       : ${params.EC2_IP}"
-            echo "Application  : http://${params.EC2_IP}:${params.APP_PORT}"
-            echo "Docker Image : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-            echo "=========================================================="
-        }
+            echo "CI/CD Pipeline finished for Build #${env.BUILD_NUMBER}"
 
-        failure {
-            echo "=========================================================="
-            echo "PIPELINE FAILED"
-            echo "=========================================================="
-            echo "Check the failed stage above."
-            echo "=========================================================="
-        }
-
-        cleanup {
-            echo "Cleaning unused local Docker images..."
+            echo '=========================================================='
+            echo 'Cleaning unused local Docker images...'
+            echo '=========================================================='
 
             bat '''
                 docker image prune -f
             '''
+        }
+
+        success {
+
+            echo '=========================================================='
+            echo 'PIPELINE SUCCESSFUL'
+            echo '=========================================================='
+
+            echo "Application deployed to:"
+            echo "http://${params.EC2_IP}:${env.APP_PORT}"
+        }
+
+        failure {
+
+            echo '=========================================================='
+            echo 'PIPELINE FAILED'
+            echo '=========================================================='
+
+            echo 'Check the failed stage above.'
+
+            echo '=========================================================='
         }
     }
 }
