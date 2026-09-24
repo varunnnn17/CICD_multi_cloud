@@ -18,7 +18,7 @@ pipeline {
         string(
             name: 'EC2_IP',
             defaultValue: '100.62.122.237',
-            description: 'AWS EC2 Public IP address for deployment'
+            description: 'AWS EC2 IP address for deployment'
         )
 
         string(
@@ -59,15 +59,18 @@ pipeline {
         stage('Environment Validation') {
             steps {
                 echo "=========================================================="
-                echo "Validating CI/CD Pipeline Environment"
-                echo "Jenkins Agent: Windows"
-                echo "Application Directory: fooddeliveryapp"
-                echo "Application Port: ${TARGET_PORT}"
-                echo "Target Image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
-                echo "EC2 Host: ${params.EC2_IP}"
+                echo "CI/CD ENVIRONMENT VALIDATION"
+                echo "=========================================================="
+                echo "Jenkins Agent       : Windows"
+                echo "Application Dir     : fooddeliveryapp"
+                echo "Application Port    : ${params.APP_PORT}"
+                echo "Docker Image        : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                echo "EC2 Host            : ${params.EC2_IP}"
+                echo "EC2 User            : ${params.EC2_USER}"
                 echo "=========================================================="
 
                 bat '''
+                    echo.
                     echo Checking Java...
                     java -version
 
@@ -93,15 +96,25 @@ pipeline {
         stage('Maven Test') {
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Running Unit and Integration Tests..."
+                    echo "=========================================================="
+                    echo "RUNNING MAVEN TESTS"
+                    echo "=========================================================="
 
                     bat '''
                         if not exist mvnw.cmd (
-                            echo ERROR: mvnw.cmd not found
+                            echo ERROR: mvnw.cmd not found.
                             exit /b 1
                         )
 
                         call mvnw.cmd clean test
+
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Maven tests failed.
+                            exit /b 1
+                        )
+
+                        echo.
+                        echo Maven tests completed successfully.
                     '''
                 }
             }
@@ -110,11 +123,20 @@ pipeline {
         stage('Maven Package') {
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Packaging Spring Boot Executable JAR..."
+                    echo "=========================================================="
+                    echo "PACKAGING SPRING BOOT APPLICATION"
+                    echo "=========================================================="
 
                     bat '''
                         call mvnw.cmd clean package -DskipTests=true
 
+                        if %ERRORLEVEL% NEQ 0 (
+                            echo ERROR: Maven package failed.
+                            exit /b 1
+                        )
+
+                        echo.
+                        echo Generated JAR:
                         dir target\\*.jar
                     '''
                 }
@@ -124,22 +146,27 @@ pipeline {
         stage('SonarQube Analysis') {
             when {
                 expression {
-                    return params.SONAR_ENABLED == true
+                    return params.SONAR_ENABLED
                 }
             }
 
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Executing SonarQube Scanner..."
+                    echo "=========================================================="
+                    echo "SONARQUBE ANALYSIS"
+                    echo "=========================================================="
 
-                    script {
-                        withSonarQubeEnv('sonarqube') {
-                            bat '''
-                                call mvnw.cmd sonar:sonar ^
-                                    -Dsonar.projectKey=food-delivery-app ^
-                                    -Dsonar.projectName=food-delivery-app
-                            '''
-                        }
+                    withSonarQubeEnv('sonarqube') {
+                        bat '''
+                            call mvnw.cmd sonar:sonar ^
+                                -Dsonar.projectKey=food-delivery-app ^
+                                -Dsonar.projectName=food-delivery-app
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SonarQube analysis failed.
+                                exit /b 1
+                            )
+                        '''
                     }
                 }
             }
@@ -148,15 +175,22 @@ pipeline {
         stage('Docker Build') {
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Building Docker Image..."
+                    echo "=========================================================="
+                    echo "BUILDING DOCKER IMAGE"
+                    echo "=========================================================="
 
                     bat """
-                        docker build -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} -t ${FULL_IMAGE_NAME}:latest .
+                        docker build ^
+                            -t ${FULL_IMAGE_NAME}:${BUILD_NUMBER} ^
+                            -t ${FULL_IMAGE_NAME}:latest .
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker build failed.
                             exit /b 1
                         )
+
+                        echo.
+                        echo Docker build completed successfully.
                     """
                 }
             }
@@ -165,7 +199,9 @@ pipeline {
         stage('Docker Image Validation') {
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Validating Docker Image..."
+                    echo "=========================================================="
+                    echo "VALIDATING DOCKER IMAGE"
+                    echo "=========================================================="
 
                     bat """
                         docker image inspect ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
@@ -175,7 +211,8 @@ pipeline {
                             exit /b 1
                         )
 
-                        echo Docker image ${FULL_IMAGE_NAME}:${BUILD_NUMBER} successfully verified.
+                        echo.
+                        echo Docker image validation successful.
                     """
                 }
             }
@@ -183,7 +220,9 @@ pipeline {
 
         stage('Docker Hub Push') {
             steps {
-                echo "--> Authenticating with Docker Hub and pushing image..."
+                echo "=========================================================="
+                echo "PUSHING DOCKER IMAGE TO DOCKER HUB"
+                echo "=========================================================="
 
                 withCredentials([
                     usernamePassword(
@@ -195,7 +234,10 @@ pipeline {
 
                     bat """
                         echo Logging into Docker Hub...
-                        echo %DOCKER_PASS% | docker login -u %DOCKER_USER% --password-stdin
+
+                        echo %DOCKER_PASS% | docker login ^
+                            -u %DOCKER_USER% ^
+                            --password-stdin
 
                         if %ERRORLEVEL% NEQ 0 (
                             echo ERROR: Docker Hub login failed.
@@ -203,22 +245,20 @@ pipeline {
                         )
 
                         echo.
-                        echo ==========================================================
-                        echo Pushing build image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
-                        echo ==========================================================
+                        echo Pushing:
+                        echo ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
                         docker push ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
                         if %ERRORLEVEL% NEQ 0 (
-                            echo ERROR: Docker build image push failed.
+                            echo ERROR: Docker image push failed.
                             docker logout
                             exit /b 1
                         )
 
                         echo.
-                        echo ==========================================================
-                        echo Pushing latest image: ${FULL_IMAGE_NAME}:latest
-                        echo ==========================================================
+                        echo Pushing:
+                        echo ${FULL_IMAGE_NAME}:latest
 
                         docker push ${FULL_IMAGE_NAME}:latest
 
@@ -228,18 +268,10 @@ pipeline {
                             exit /b 1
                         )
 
-                        echo.
-                        echo ==========================================================
-                        echo Docker images pushed successfully
-                        echo ==========================================================
-
                         docker logout
 
-                        if %ERRORLEVEL% NEQ 0 (
-                            echo WARNING: Docker logout returned a non-zero exit code.
-                        )
-
-                        exit /b 0
+                        echo.
+                        echo Docker images pushed successfully.
                     """
                 }
             }
@@ -247,7 +279,14 @@ pipeline {
 
         stage('Deploy to AWS EC2') {
             steps {
-                echo "--> Deploying application to AWS EC2..."
+                echo "=========================================================="
+                echo "DEPLOYING TO AWS EC2"
+                echo "=========================================================="
+                echo "EC2 IP       : ${params.EC2_IP}"
+                echo "EC2 User     : ${params.EC2_USER}"
+                echo "Application  : ${params.APP_PORT}"
+                echo "Docker Image : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+                echo "=========================================================="
 
                 withCredentials([
                     sshUserPrivateKey(
@@ -259,210 +298,72 @@ pipeline {
 
                     dir('fooddeliveryapp') {
 
-                        powershell(
-                            script: """
-                                \\$ErrorActionPreference = 'Stop'
+                        bat """
+                            echo.
+                            echo ==========================================================
+                            echo TESTING SSH CONNECTION
+                            echo ==========================================================
 
-                                \\$sourceKey = \\$env:SSH_KEY_FILE
-                                \\$remoteUser = \\$env:SSH_USER
-                                \\$ec2Ip = '${params.EC2_IP}'
-                                \\$imageName = '${FULL_IMAGE_NAME}:${BUILD_NUMBER}'
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "%SSH_KEY_FILE%" ^
+                                "%SSH_USER%@${params.EC2_IP}" ^
+                                "echo SSH_CONNECTION_SUCCESS"
 
-                                if ([string]::IsNullOrWhiteSpace(\\$remoteUser)) {
-                                    \\$remoteUser = '${params.EC2_USER}'
-                                }
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SSH connection to EC2 failed.
+                                exit /b 1
+                            )
 
-                                Write-Host "=========================================================="
-                                Write-Host "AWS EC2 DEPLOYMENT"
-                                Write-Host "=========================================================="
-                                Write-Host "Remote user : \\$remoteUser"
-                                Write-Host "EC2 host    : \\$ec2Ip"
-                                Write-Host "Docker image: \\$imageName"
-                                Write-Host ""
+                            echo.
+                            echo SSH connection successful.
 
-                                if (-not (Test-Path \\$sourceKey)) {
-                                    throw "Jenkins SSH private key was not found: \\$sourceKey"
-                                }
+                            echo.
+                            echo ==========================================================
+                            echo COPYING deploy.sh TO EC2
+                            echo ==========================================================
 
-                                # --------------------------------------------------
-                                # Prepare deploy.sh for Linux
-                                # Convert Windows CRLF line endings to Unix LF.
-                                # --------------------------------------------------
+                            scp ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "%SSH_KEY_FILE%" ^
+                                "deploy.sh" ^
+                                "%SSH_USER%@${params.EC2_IP}:/home/%SSH_USER%/deploy.sh"
 
-                                Write-Host "Preparing deploy.sh for Linux..."
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: SCP failed.
+                                exit /b 1
+                            )
 
-                                \\$deployScript = Join-Path (Get-Location) 'deploy.sh'
+                            echo.
+                            echo deploy.sh copied successfully.
 
-                                if (-not (Test-Path \\$deployScript)) {
-                                    throw "deploy.sh was not found: \\$deployScript"
-                                }
+                            echo.
+                            echo ==========================================================
+                            echo RUNNING DEPLOYMENT ON EC2
+                            echo ==========================================================
 
-                                \\$deployContent = [System.IO.File]::ReadAllText(
-                                    \\$deployScript,
-                                    [System.Text.Encoding]::UTF8
-                                )
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o UserKnownHostsFile=NUL ^
+                                -o ConnectTimeout=15 ^
+                                -i "%SSH_KEY_FILE%" ^
+                                "%SSH_USER%@${params.EC2_IP}" ^
+                                "chmod +x /home/%SSH_USER%/deploy.sh && /home/%SSH_USER%/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
 
-                                # Remove Windows CR characters.
-                                \\$deployContent = \\$deployContent -replace "`r`n", "`n"
-                                \\$deployContent = \\$deployContent -replace "`r", "`n"
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: EC2 deployment failed.
+                                exit /b 1
+                            )
 
-                                [System.IO.File]::WriteAllText(
-                                    \\$deployScript,
-                                    \\$deployContent,
-                                    [System.Text.UTF8Encoding]::new(\\$false)
-                                )
-
-                                Write-Host "deploy.sh converted to Unix LF line endings."
-
-                                # --------------------------------------------------
-                                # Prepare SSH key
-                                # --------------------------------------------------
-
-                                Write-Host ""
-                                Write-Host "Preparing local SSH key..."
-
-                                \\$deployKey = Join-Path (Get-Location) 'jenkins-ec2-key.tmp'
-
-                                Copy-Item `
-                                    -Path \\$sourceKey `
-                                    -Destination \\$deployKey `
-                                    -Force
-
-                                if (-not (Test-Path \\$deployKey)) {
-                                    throw "Failed to create deployment SSH key: \\$deployKey"
-                                }
-
-                                Write-Host "Removing inherited permissions from deployment key..."
-
-                                & icacls.exe \\$deployKey /inheritance:r
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "Failed to remove inherited permissions from deployment key."
-                                }
-
-                                Write-Host "Granting SYSTEM full access..."
-
-                                & icacls.exe \\$deployKey /grant:r "SYSTEM:(F)"
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "Failed to grant SYSTEM access to deployment key."
-                                }
-
-                                Write-Host "Granting Administrators full access..."
-
-                                & icacls.exe \\$deployKey /grant:r "Administrators:(F)"
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "Failed to grant Administrators access to deployment key."
-                                }
-
-                                Write-Host ""
-                                Write-Host "Current deployment key permissions:"
-                                & icacls.exe \\$deployKey
-
-                                # --------------------------------------------------
-                                # Test SSH
-                                # --------------------------------------------------
-
-                                Write-Host ""
-                                Write-Host "=========================================================="
-                                Write-Host "Testing SSH connection to EC2"
-                                Write-Host "=========================================================="
-
-                                & ssh.exe `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i "\\$deployKey" `
-                                    "\\${remoteUser}@\\${ec2Ip}" `
-                                    "echo SSH_CONNECTION_SUCCESS"
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "SSH connection test failed with exit code \\$LASTEXITCODE."
-                                }
-
-                                # --------------------------------------------------
-                                # Copy deploy.sh
-                                # --------------------------------------------------
-
-                                Write-Host ""
-                                Write-Host "=========================================================="
-                                Write-Host "Copying deploy.sh to EC2"
-                                Write-Host "=========================================================="
-
-                                & scp.exe `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i "\\$deployKey" `
-                                    "deploy.sh" `
-                                    "\\${remoteUser}@\\${ec2Ip}:/home/\\${remoteUser}/deploy.sh"
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "SCP failed with exit code \\$LASTEXITCODE."
-                                }
-
-                                # --------------------------------------------------
-                                # Verify Linux line endings remotely
-                                # --------------------------------------------------
-
-                                Write-Host ""
-                                Write-Host "=========================================================="
-                                Write-Host "Verifying deploy.sh on EC2"
-                                Write-Host "=========================================================="
-
-                                & ssh.exe `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i "\\$deployKey" `
-                                    "\\${remoteUser}@\\${ec2Ip}" `
-                                    "file /home/\\${remoteUser}/deploy.sh && head -n 1 /home/\\${remoteUser}/deploy.sh"
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "Remote deploy.sh verification failed with exit code \\$LASTEXITCODE."
-                                }
-
-                                # --------------------------------------------------
-                                # Execute deployment
-                                # --------------------------------------------------
-
-                                Write-Host ""
-                                Write-Host "=========================================================="
-                                Write-Host "Executing deployment on EC2"
-                                Write-Host "=========================================================="
-
-                                \\$remoteCommand = "chmod +x /home/\\${remoteUser}/deploy.sh && /home/\\${remoteUser}/deploy.sh \\$imageName"
-
-                                & ssh.exe `
-                                    -o StrictHostKeyChecking=no `
-                                    -o UserKnownHostsFile=NUL `
-                                    -o ConnectTimeout=15 `
-                                    -i "\\$deployKey" `
-                                    "\\${remoteUser}@\\${ec2Ip}" `
-                                    \\$remoteCommand
-
-                                if (\\$LASTEXITCODE -ne 0) {
-                                    throw "EC2 deployment failed with exit code \\$LASTEXITCODE."
-                                }
-
-                                Write-Host ""
-                                Write-Host "=========================================================="
-                                Write-Host "EC2 DEPLOYMENT COMPLETED SUCCESSFULLY"
-                                Write-Host "=========================================================="
-
-                                # --------------------------------------------------
-                                # Cleanup temporary SSH key
-                                # --------------------------------------------------
-
-                                if (Test-Path \\$deployKey) {
-                                    Remove-Item `
-                                        -Path \\$deployKey `
-                                        -Force `
-                                        -ErrorAction SilentlyContinue
-                                }
-                            """
-                        )
+                            echo.
+                            echo ==========================================================
+                            echo EC2 DEPLOYMENT COMPLETED SUCCESSFULLY
+                            echo ==========================================================
+                        """
                     }
                 }
             }
@@ -471,13 +372,16 @@ pipeline {
         stage('Kubernetes Deploy') {
             when {
                 expression {
-                    return params.K8S_ENABLED == true
+                    return params.K8S_ENABLED
                 }
             }
 
             steps {
                 dir('fooddeliveryapp') {
-                    echo "--> Deploying to Kubernetes Cluster..."
+
+                    echo "=========================================================="
+                    echo "KUBERNETES DEPLOYMENT"
+                    echo "=========================================================="
 
                     bat '''
                         kubectl version --client
@@ -516,23 +420,24 @@ pipeline {
         success {
             echo "=========================================================="
             echo "PIPELINE SUCCESS"
-            echo "Food Delivery App deployed to EC2"
-            echo "EC2 IP: ${params.EC2_IP}"
-            echo "Port: ${TARGET_PORT}"
-            echo "Application URL: http://${params.EC2_IP}:${params.APP_PORT}"
-            echo "Docker Image: ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
+            echo "=========================================================="
+            echo "Food Delivery App deployed successfully."
+            echo "EC2 IP       : ${params.EC2_IP}"
+            echo "Application  : http://${params.EC2_IP}:${params.APP_PORT}"
+            echo "Docker Image : ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
             echo "=========================================================="
         }
 
         failure {
             echo "=========================================================="
             echo "PIPELINE FAILED"
-            echo "Check the stage logs above for the exact error."
+            echo "=========================================================="
+            echo "Check the failed stage above."
             echo "=========================================================="
         }
 
         cleanup {
-            echo "Cleaning up local Docker images..."
+            echo "Cleaning unused local Docker images..."
 
             bat '''
                 docker image prune -f
