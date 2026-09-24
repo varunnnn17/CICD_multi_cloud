@@ -96,6 +96,7 @@ pipeline {
         stage('Maven Test') {
             steps {
                 dir('fooddeliveryapp') {
+
                     echo "=========================================================="
                     echo "RUNNING MAVEN TESTS"
                     echo "=========================================================="
@@ -123,6 +124,7 @@ pipeline {
         stage('Maven Package') {
             steps {
                 dir('fooddeliveryapp') {
+
                     echo "=========================================================="
                     echo "PACKAGING SPRING BOOT APPLICATION"
                     echo "=========================================================="
@@ -152,11 +154,13 @@ pipeline {
 
             steps {
                 dir('fooddeliveryapp') {
+
                     echo "=========================================================="
                     echo "SONARQUBE ANALYSIS"
                     echo "=========================================================="
 
                     withSonarQubeEnv('sonarqube') {
+
                         bat '''
                             call mvnw.cmd sonar:sonar ^
                                 -Dsonar.projectKey=food-delivery-app ^
@@ -175,6 +179,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 dir('fooddeliveryapp') {
+
                     echo "=========================================================="
                     echo "BUILDING DOCKER IMAGE"
                     echo "=========================================================="
@@ -199,6 +204,7 @@ pipeline {
         stage('Docker Image Validation') {
             steps {
                 dir('fooddeliveryapp') {
+
                     echo "=========================================================="
                     echo "VALIDATING DOCKER IMAGE"
                     echo "=========================================================="
@@ -220,6 +226,7 @@ pipeline {
 
         stage('Docker Hub Push') {
             steps {
+
                 echo "=========================================================="
                 echo "PUSHING DOCKER IMAGE TO DOCKER HUB"
                 echo "=========================================================="
@@ -245,7 +252,7 @@ pipeline {
                         )
 
                         echo.
-                        echo Pushing:
+                        echo Pushing image:
                         echo ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
 
                         docker push ${FULL_IMAGE_NAME}:${BUILD_NUMBER}
@@ -257,7 +264,7 @@ pipeline {
                         )
 
                         echo.
-                        echo Pushing:
+                        echo Pushing latest image:
                         echo ${FULL_IMAGE_NAME}:latest
 
                         docker push ${FULL_IMAGE_NAME}:latest
@@ -279,6 +286,7 @@ pipeline {
 
         stage('Deploy to AWS EC2') {
             steps {
+
                 echo "=========================================================="
                 echo "DEPLOYING TO AWS EC2"
                 echo "=========================================================="
@@ -301,6 +309,68 @@ pipeline {
                         bat """
                             echo.
                             echo ==========================================================
+                            echo PREPARING SSH PRIVATE KEY
+                            echo ==========================================================
+
+                            set "FIXED_KEY=%WORKSPACE%\\ec2-deploy-key.pem"
+
+                            copy /Y "%SSH_KEY_FILE%" "%FIXED_KEY%"
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: Failed to copy SSH private key.
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo Removing inherited permissions...
+
+                            icacls "%FIXED_KEY%" /inheritance:r
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: Failed to remove inherited permissions.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo Removing BUILTIN Users permissions...
+
+                            icacls "%FIXED_KEY%" /remove:g "BUILTIN\\Users"
+
+                            echo.
+                            echo Removing Everyone permissions...
+
+                            icacls "%FIXED_KEY%" /remove:g "Everyone"
+
+                            echo.
+                            echo Granting LocalSystem full access...
+
+                            icacls "%FIXED_KEY%" /grant:r "NT AUTHORITY\\SYSTEM:(F)"
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: Failed to grant LocalSystem permissions.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo Granting Administrators full access...
+
+                            icacls "%FIXED_KEY%" /grant:r "BUILTIN\\Administrators:(F)"
+
+                            if %ERRORLEVEL% NEQ 0 (
+                                echo ERROR: Failed to grant Administrators permissions.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo Current SSH key permissions:
+
+                            icacls "%FIXED_KEY%"
+
+                            echo.
+                            echo ==========================================================
                             echo TESTING SSH CONNECTION
                             echo ==========================================================
 
@@ -308,12 +378,13 @@ pipeline {
                                 -o StrictHostKeyChecking=no ^
                                 -o UserKnownHostsFile=NUL ^
                                 -o ConnectTimeout=15 ^
-                                -i "%SSH_KEY_FILE%" ^
+                                -i "%FIXED_KEY%" ^
                                 "%SSH_USER%@${params.EC2_IP}" ^
                                 "echo SSH_CONNECTION_SUCCESS"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: SSH connection to EC2 failed.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
                                 exit /b 1
                             )
 
@@ -329,12 +400,13 @@ pipeline {
                                 -o StrictHostKeyChecking=no ^
                                 -o UserKnownHostsFile=NUL ^
                                 -o ConnectTimeout=15 ^
-                                -i "%SSH_KEY_FILE%" ^
+                                -i "%FIXED_KEY%" ^
                                 "deploy.sh" ^
                                 "%SSH_USER%@${params.EC2_IP}:/home/%SSH_USER%/deploy.sh"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: SCP failed.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
                                 exit /b 1
                             )
 
@@ -350,19 +422,29 @@ pipeline {
                                 -o StrictHostKeyChecking=no ^
                                 -o UserKnownHostsFile=NUL ^
                                 -o ConnectTimeout=15 ^
-                                -i "%SSH_KEY_FILE%" ^
+                                -i "%FIXED_KEY%" ^
                                 "%SSH_USER%@${params.EC2_IP}" ^
                                 "chmod +x /home/%SSH_USER%/deploy.sh && /home/%SSH_USER%/deploy.sh ${FULL_IMAGE_NAME}:${BUILD_NUMBER}"
 
                             if %ERRORLEVEL% NEQ 0 (
                                 echo ERROR: EC2 deployment failed.
+                                del /f /q "%FIXED_KEY%" >nul 2>&1
                                 exit /b 1
                             )
 
                             echo.
                             echo ==========================================================
-                            echo EC2 DEPLOYMENT COMPLETED SUCCESSFULLY
+                            echo EC2 DEPLOYMENT SUCCESSFUL
                             echo ==========================================================
+
+                            echo.
+                            echo Application URL:
+                            echo http://${params.EC2_IP}:${params.APP_PORT}
+
+                            del /f /q "%FIXED_KEY%" >nul 2>&1
+
+                            echo.
+                            echo Temporary SSH key removed.
                         """
                     }
                 }
