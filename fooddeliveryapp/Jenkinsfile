@@ -3,6 +3,7 @@ pipeline {
     agent any
 
     parameters {
+
         string(
             name: 'EC2_IP',
             defaultValue: '100.62.122.237',
@@ -304,157 +305,201 @@ pipeline {
 
                     dir("${env.APP_DIR}") {
 
-                        bat """
-                            echo.
-                            echo ==========================================================
-                            echo PREPARING SSH PRIVATE KEY
-                            echo ==========================================================
+                        powershell(
+                            script: """
+                                \$ErrorActionPreference = 'Stop'
 
-                            set "FIXED_KEY=%WORKSPACE%\\ec2-deploy-key.pem"
+                                \$sourceKey = \$env:SSH_KEY_FILE
+                                \$fixedKey = Join-Path \$env:WORKSPACE 'ec2-deploy-key.pem'
 
-                            copy /Y "%SSH_KEY_FILE%" "%FIXED_KEY%"
+                                \$ec2Ip = '${params.EC2_IP}'
+                                \$ec2User = '${params.EC2_USER}'
+                                \$credentialUser = \$env:SSH_USER
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: Failed to copy SSH private key.
-                                exit /b 1
-                            )
+                                if ([string]::IsNullOrWhiteSpace(\$credentialUser)) {
+                                    \$credentialUser = \$ec2User
+                                }
 
-                            echo.
-                            echo Removing inherited permissions...
+                                \$image = '${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}'
 
-                            icacls "%FIXED_KEY%" /inheritance:r
+                                Write-Host '=========================================================='
+                                Write-Host 'AWS EC2 DEPLOYMENT'
+                                Write-Host '=========================================================='
+                                Write-Host "EC2 Host     : \$ec2Ip"
+                                Write-Host "EC2 User     : \$credentialUser"
+                                Write-Host "Docker Image : \$image"
+                                Write-Host ''
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: Failed to remove inherited permissions.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                if (-not (Test-Path \$sourceKey)) {
+                                    throw "Jenkins SSH private key was not found: \$sourceKey"
+                                }
 
-                            echo.
-                            echo Removing BUILTIN Users permissions...
+                                # --------------------------------------------------
+                                # Prepare SSH private key
+                                # --------------------------------------------------
 
-                            icacls "%FIXED_KEY%" /remove:g "BUILTIN\\Users"
+                                Write-Host 'Preparing SSH private key...'
 
-                            echo.
-                            echo Removing Everyone permissions...
+                                Copy-Item -Path \$sourceKey -Destination \$fixedKey -Force
 
-                            icacls "%FIXED_KEY%" /remove:g "Everyone"
+                                if (-not (Test-Path \$fixedKey)) {
+                                    throw 'Failed to create deployment SSH key.'
+                                }
 
-                            echo.
-                            echo Granting LocalSystem full access...
+                                Write-Host 'Removing inherited permissions...'
 
-                            icacls "%FIXED_KEY%" /grant:r "NT AUTHORITY\\SYSTEM:(F)"
+                                & icacls \$fixedKey /inheritance:r
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: Failed to grant LocalSystem permissions.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'Failed to remove inherited permissions.'
+                                }
 
-                            echo.
-                            echo Granting Administrators full access...
+                                Write-Host 'Removing BUILTIN Users permissions...'
 
-                            icacls "%FIXED_KEY%" /grant:r "BUILTIN\\Administrators:(F)"
+                                & icacls \$fixedKey /remove:g 'BUILTIN\\Users' 2>\$null
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: Failed to grant Administrators permissions.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                Write-Host 'Removing Everyone permissions...'
 
-                            echo.
-                            echo Current SSH key permissions:
+                                & icacls \$fixedKey /remove:g 'Everyone' 2>\$null
 
-                            icacls "%FIXED_KEY%"
+                                Write-Host 'Granting LocalSystem full access...'
 
-                            echo.
-                            echo ==========================================================
-                            echo TESTING SSH CONNECTION
-                            echo ==========================================================
+                                & icacls \$fixedKey /grant:r 'NT AUTHORITY\\SYSTEM:(F)'
 
-                            ssh ^
-                                -o StrictHostKeyChecking=no ^
-                                -o UserKnownHostsFile=NUL ^
-                                -o ConnectTimeout=15 ^
-                                -i "%FIXED_KEY%" ^
-                                "${params.EC2_USER}@${params.EC2_IP}" ^
-                                "echo SSH_CONNECTION_SUCCESS"
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'Failed to grant LocalSystem permissions.'
+                                }
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: SSH connection to EC2 failed.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                Write-Host 'Granting Administrators full access...'
 
-                            echo.
-                            echo SSH connection successful.
+                                & icacls \$fixedKey /grant:r 'BUILTIN\\Administrators:(F)'
 
-                            echo.
-                            echo ==========================================================
-                            echo PREPARING deploy.sh FOR LINUX
-                            echo ==========================================================
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'Failed to grant Administrators permissions.'
+                                }
 
-                            powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                                "\$path = 'deploy.sh'; \$content = [System.IO.File]::ReadAllText(\$path); [System.IO.File]::WriteAllText(\$path, (\$content -replace "`r`n","`n" -replace "`r","`n"), (New-Object System.Text.UTF8Encoding(\$false)))"
+                                Write-Host ''
+                                Write-Host 'Current SSH key permissions:'
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: Failed to convert deploy.sh to Linux line endings.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                & icacls \$fixedKey
 
-                            echo deploy.sh converted to Linux line endings successfully.
+                                # --------------------------------------------------
+                                # Test SSH connection
+                                # --------------------------------------------------
 
-                            echo.
-                            echo ==========================================================
-                            echo COPYING deploy.sh TO EC2
-                            echo ==========================================================
+                                Write-Host ''
+                                Write-Host '=========================================================='
+                                Write-Host 'TESTING SSH CONNECTION'
+                                Write-Host '=========================================================='
 
-                            scp ^
-                                -o StrictHostKeyChecking=no ^
-                                -o UserKnownHostsFile=NUL ^
-                                -o ConnectTimeout=15 ^
-                                -i "%FIXED_KEY%" ^
-                                "deploy.sh" ^
-                                "${params.EC2_USER}@${params.EC2_IP}:/home/${params.EC2_USER}/deploy.sh"
+                                & ssh `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -o ConnectTimeout=15 `
+                                    -i \$fixedKey `
+                                    "\${credentialUser}@\${ec2Ip}" `
+                                    'echo SSH_CONNECTION_SUCCESS'
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: SCP failed.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'SSH connection to EC2 failed.'
+                                }
 
-                            echo.
-                            echo deploy.sh copied successfully.
+                                Write-Host 'SSH connection successful.'
 
-                            echo.
-                            echo ==========================================================
-                            echo RUNNING DEPLOYMENT ON EC2
-                            echo ==========================================================
+                                # --------------------------------------------------
+                                # Convert deploy.sh from Windows CRLF to Linux LF
+                                # --------------------------------------------------
 
-                            ssh ^
-                                -o StrictHostKeyChecking=no ^
-                                -o UserKnownHostsFile=NUL ^
-                                -o ConnectTimeout=15 ^
-                                -i "%FIXED_KEY%" ^
-                                "${params.EC2_USER}@${params.EC2_IP}" ^
-                                "chmod +x /home/${params.EC2_USER}/deploy.sh && /home/${params.EC2_USER}/deploy.sh ${env.DOCKERHUB_USER}/${env.IMAGE_NAME}:${env.BUILD_NUMBER}"
+                                Write-Host ''
+                                Write-Host '=========================================================='
+                                Write-Host 'PREPARING deploy.sh FOR LINUX'
+                                Write-Host '=========================================================='
 
-                            if %ERRORLEVEL% NEQ 0 (
-                                echo ERROR: EC2 deployment failed.
-                                del /f /q "%FIXED_KEY%" >nul 2>&1
-                                exit /b 1
-                            )
+                                \$deployScript = Join-Path (Get-Location) 'deploy.sh'
 
-                            echo.
-                            echo ==========================================================
-                            echo EC2 DEPLOYMENT SUCCESSFUL
-                            echo ==========================================================
-                            echo Application URL:
-                            echo http://${params.EC2_IP}:${env.APP_PORT}
+                                if (-not (Test-Path \$deployScript)) {
+                                    throw "deploy.sh was not found: \$deployScript"
+                                }
 
-                            del /f /q "%FIXED_KEY%" >nul 2>&1
-                        """
+                                \$bytes = [System.IO.File]::ReadAllBytes(\$deployScript)
+
+                                \$text = [System.Text.Encoding]::UTF8.GetString(\$bytes)
+
+                                \$text = \$text.Replace("`r`n", "`n")
+                                \$text = \$text.Replace("`r", "`n")
+
+                                [System.IO.File]::WriteAllText(
+                                    \$deployScript,
+                                    \$text,
+                                    [System.Text.UTF8Encoding]::new(\$false)
+                                )
+
+                                Write-Host 'deploy.sh converted to Linux LF line endings.'
+
+                                # --------------------------------------------------
+                                # Copy deploy.sh to EC2
+                                # --------------------------------------------------
+
+                                Write-Host ''
+                                Write-Host '=========================================================='
+                                Write-Host 'COPYING deploy.sh TO EC2'
+                                Write-Host '=========================================================='
+
+                                \$remoteDeployPath = "/home/\${credentialUser}/deploy.sh"
+
+                                & scp `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -o ConnectTimeout=15 `
+                                    -i \$fixedKey `
+                                    \$deployScript `
+                                    "\${credentialUser}@\${ec2Ip}:\${remoteDeployPath}"
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'SCP failed.'
+                                }
+
+                                Write-Host 'deploy.sh copied successfully.'
+
+                                # --------------------------------------------------
+                                # Run deployment on EC2
+                                # --------------------------------------------------
+
+                                Write-Host ''
+                                Write-Host '=========================================================='
+                                Write-Host 'RUNNING DEPLOYMENT ON EC2'
+                                Write-Host '=========================================================='
+
+                                \$remoteCommand = "chmod +x \${remoteDeployPath} && \${remoteDeployPath} \$image"
+
+                                & ssh `
+                                    -o StrictHostKeyChecking=no `
+                                    -o UserKnownHostsFile=NUL `
+                                    -o ConnectTimeout=15 `
+                                    -i \$fixedKey `
+                                    "\${credentialUser}@\${ec2Ip}" `
+                                    \$remoteCommand
+
+                                if (\$LASTEXITCODE -ne 0) {
+                                    throw 'EC2 deployment failed.'
+                                }
+
+                                Write-Host ''
+                                Write-Host '=========================================================='
+                                Write-Host 'EC2 DEPLOYMENT SUCCESSFUL'
+                                Write-Host '=========================================================='
+                                Write-Host "Application URL:"
+                                Write-Host "http://\${ec2Ip}:${env.APP_PORT}"
+
+                                # --------------------------------------------------
+                                # Remove temporary SSH key
+                                # --------------------------------------------------
+
+                                if (Test-Path \$fixedKey) {
+                                    Remove-Item \$fixedKey -Force -ErrorAction SilentlyContinue
+                                }
+                            """
+                        )
                     }
                 }
             }
