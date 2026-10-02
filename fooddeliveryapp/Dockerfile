@@ -11,7 +11,7 @@ WORKDIR /app
 COPY pom.xml .
 COPY src src
 
-# Build and package the application
+# Build and package application
 RUN mvn clean package
 
 # ============================================================
@@ -24,16 +24,16 @@ WORKDIR /app
 # Create non-root user for security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Copy the packaged JAR from builder
+# Copy packaged JAR from builder
 COPY --from=builder /app/target/*.jar app.jar
 
 # Give application user ownership
 RUN chown -R appuser:appgroup /app
 
-# Switch to non-root user
+# Run application as non-root user
 USER appuser
 
-# Expose application port
+# Expose application port inside Docker
 EXPOSE 8083
 
 # Start Spring Boot application
