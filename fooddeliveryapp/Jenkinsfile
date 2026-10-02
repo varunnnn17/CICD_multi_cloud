@@ -51,17 +51,13 @@ pipeline {
 
         IMAGE_NAME = 'food-delivery'
 
-        DOCKER_IMAGE = "${params.DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
-
-        DOCKER_LATEST = "${params.DOCKERHUB_USER}/${IMAGE_NAME}:latest"
-
-        RENDER_URL = 'https://food-delivery-render.onrender.com'
-
         DOCKER_CREDENTIAL_ID = 'dockercred1'
 
         SSH_CREDENTIAL_ID = 'ec2-ssh-key'
 
         RENDER_DEPLOY_HOOK_CREDENTIAL_ID = 'render-deploy-hook'
+
+        RENDER_URL = 'https://food-delivery-render.onrender.com'
     }
 
     stages {
@@ -79,7 +75,7 @@ pipeline {
                 echo "Application         : Food Delivery Sample"
                 echo "Application Dir     : ${APP_DIR}"
                 echo "Application Port    : ${APP_PORT}"
-                echo "Docker Image        : ${DOCKER_IMAGE}"
+                echo "Docker Image        : ${params.DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
                 echo "AWS EC2             : ${params.EC2_IP}"
                 echo "AWS Host Port       : ${AWS_HOST_PORT}"
                 echo "Render URL          : ${RENDER_URL}"
@@ -91,6 +87,7 @@ pipeline {
                     echo.
                     echo Checking Java...
                     java -version
+
                     if errorlevel 1 (
                         echo ERROR: Java is not available.
                         exit /b 1
@@ -106,6 +103,7 @@ pipeline {
                     )
 
                     mvnw.cmd --version
+
                     if errorlevel 1 (
                         echo ERROR: Maven Wrapper is not working.
                         exit /b 1
@@ -114,6 +112,7 @@ pipeline {
                     echo.
                     echo Checking Docker...
                     docker --version
+
                     if errorlevel 1 (
                         echo ERROR: Docker is not available.
                         exit /b 1
@@ -122,6 +121,7 @@ pipeline {
                     echo.
                     echo Checking Git...
                     git --version
+
                     if errorlevel 1 (
                         echo ERROR: Git is not available.
                         exit /b 1
@@ -131,9 +131,28 @@ pipeline {
                     echo Checking SSH...
                     ssh -V
 
+                    if errorlevel 1 (
+                        echo ERROR: SSH is not available.
+                        exit /b 1
+                    )
+
                     echo.
                     echo Checking SCP...
                     where scp
+
+                    if errorlevel 1 (
+                        echo ERROR: SCP is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking curl...
+                    curl.exe --version
+
+                    if errorlevel 1 (
+                        echo ERROR: curl is not available.
+                        exit /b 1
+                    )
 
                     echo.
                     echo Environment validation completed successfully.
@@ -221,8 +240,7 @@ pipeline {
                             echo ============================================================
                             echo.
 
-                            mvnw.cmd sonar:sonar ^
-                                -Dsonar.token=%SONAR_TOKEN%
+                            mvnw.cmd sonar:sonar -Dsonar.token=%SONAR_TOKEN%
 
                             if errorlevel 1 (
                                 echo ERROR: SonarQube analysis failed.
@@ -243,9 +261,7 @@ pipeline {
 
                 dir("${APP_DIR}") {
 
-                    echo "Building Docker image: ${DOCKER_IMAGE}"
-
-                    bat """
+                    bat '''
                         echo.
                         echo ============================================================
                         echo DOCKER BUILD
@@ -253,8 +269,8 @@ pipeline {
                         echo.
 
                         docker build ^
-                            -t "${DOCKER_IMAGE}" ^
-                            -t "${DOCKER_LATEST}" ^
+                            -t "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" ^
+                            -t "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" ^
                             .
 
                         if errorlevel 1 (
@@ -264,7 +280,7 @@ pipeline {
 
                         echo.
                         echo Docker images built successfully.
-                    """
+                    '''
                 }
             }
         }
@@ -273,29 +289,33 @@ pipeline {
 
             steps {
 
-                bat """
-                    echo.
-                    echo ============================================================
-                    echo DOCKER IMAGE VALIDATION
-                    echo ============================================================
-                    echo.
+                dir("${APP_DIR}") {
 
-                    docker image inspect "${DOCKER_IMAGE}" >nul
+                    bat '''
+                        echo.
+                        echo ============================================================
+                        echo DOCKER IMAGE VALIDATION
+                        echo ============================================================
+                        echo.
 
-                    if errorlevel 1 (
-                        echo ERROR: Versioned Docker image was not created.
-                        exit /b 1
-                    )
+                        docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" >nul
 
-                    docker image inspect "${DOCKER_LATEST}" >nul
+                        if errorlevel 1 (
+                            echo ERROR: Versioned Docker image was not created.
+                            exit /b 1
+                        )
 
-                    if errorlevel 1 (
-                        echo ERROR: Latest Docker image was not created.
-                        exit /b 1
-                    )
+                        docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" >nul
 
-                    echo Docker image validation successful.
-                """
+                        if errorlevel 1 (
+                            echo ERROR: Latest Docker image was not created.
+                            exit /b 1
+                        )
+
+                        echo.
+                        echo Docker image validation successful.
+                    '''
+                }
             }
         }
 
@@ -305,13 +325,13 @@ pipeline {
 
                 withCredentials([
                     usernamePassword(
-                        credentialsId: "${DOCKER_CREDENTIAL_ID}",
+                        credentialsId: 'dockercred1',
                         usernameVariable: 'DOCKER_USERNAME',
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
 
-                    bat """
+                    bat '''
                         echo.
                         echo ============================================================
                         echo DOCKER HUB PUSH
@@ -335,10 +355,10 @@ pipeline {
                         echo.
                         echo Pushing versioned image...
 
-                        docker push "${DOCKER_IMAGE}"
+                        docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%"
 
                         if errorlevel 1 (
-                            echo ERROR: Versioned image push failed.
+                            echo ERROR: Versioned Docker image push failed.
                             docker logout
                             exit /b 1
                         )
@@ -346,10 +366,10 @@ pipeline {
                         echo.
                         echo Pushing latest image...
 
-                        docker push "${DOCKER_LATEST}"
+                        docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:latest"
 
                         if errorlevel 1 (
-                            echo ERROR: Latest image push failed.
+                            echo ERROR: Latest Docker image push failed.
                             docker logout
                             exit /b 1
                         )
@@ -358,7 +378,7 @@ pipeline {
 
                         echo.
                         echo Docker Hub push completed successfully.
-                    """
+                    '''
                 }
             }
         }
@@ -371,19 +391,19 @@ pipeline {
 
                     withCredentials([
                         sshUserPrivateKey(
-                            credentialsId: "${SSH_CREDENTIAL_ID}",
+                            credentialsId: 'ec2-ssh-key',
                             keyFileVariable: 'SSH_KEY'
                         )
                     ]) {
 
-                        bat """
+                        bat '''
                             echo.
                             echo ============================================================
                             echo AWS EC2 DEPLOYMENT
                             echo ============================================================
                             echo.
 
-                            echo Preparing SSH key...
+                            echo Preparing SSH key permissions...
 
                             icacls "%SSH_KEY%" /inheritance:r
 
@@ -392,23 +412,24 @@ pipeline {
                                 exit /b 1
                             )
 
-                            icacls "%SSH_KEY%" /grant:r "NT AUTHORITY\\\\SYSTEM:(F)"
+                            icacls "%SSH_KEY%" /grant:r "NT AUTHORITY\\SYSTEM:(F)"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to grant SYSTEM permissions.
                                 exit /b 1
                             )
 
-                            icacls "%SSH_KEY%" /grant:r "BUILTIN\\\\Administrators:(F)"
+                            icacls "%SSH_KEY%" /grant:r "BUILTIN\\Administrators:(F)"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to grant Administrators permissions.
                                 exit /b 1
                             )
 
-                            echo SSH key permissions configured.
                             echo.
+                            echo SSH key permissions configured.
 
+                            echo.
                             echo Testing SSH connection to EC2...
 
                             ssh ^
@@ -421,16 +442,13 @@ pipeline {
                             if errorlevel 1 (
                                 echo.
                                 echo ERROR: SSH connection to EC2 failed.
-                                echo.
-                                echo Verify that credential ec2-ssh-key matches
-                                echo the AWS EC2 key pair used by %EC2_IP%.
                                 exit /b 1
                             )
 
                             echo.
                             echo SSH connection successful.
-                            echo.
 
+                            echo.
                             echo Copying deploy.sh to EC2...
 
                             scp ^
@@ -447,26 +465,26 @@ pipeline {
 
                             echo.
                             echo deploy.sh copied successfully.
-                            echo.
 
-                            echo Converting deploy.sh to Unix LF format on EC2...
+                            echo.
+                            echo Removing Windows CR characters from deploy.sh on EC2...
 
                             ssh ^
                                 -o StrictHostKeyChecking=no ^
                                 -o ConnectTimeout=20 ^
                                 -i "%SSH_KEY%" ^
                                 "%EC2_USER%@%EC2_IP%" ^
-                                "sed -i 's/\\\\r$//' /home/ubuntu/deploy.sh"
+                                "sed -i 's/\\r$//' /home/ubuntu/deploy.sh"
 
                             if errorlevel 1 (
-                                echo ERROR: Failed to convert deploy.sh line endings on EC2.
+                                echo ERROR: Failed to convert deploy.sh to Unix line endings.
                                 exit /b 1
                             )
 
                             echo.
-                            echo deploy.sh converted successfully on EC2.
-                            echo.
+                            echo Unix line-ending conversion completed.
 
+                            echo.
                             echo Setting execute permission...
 
                             ssh ^
@@ -489,9 +507,10 @@ pipeline {
                                 -o ConnectTimeout=20 ^
                                 -i "%SSH_KEY%" ^
                                 "%EC2_USER%@%EC2_IP%" ^
-                                "/bin/bash /home/ubuntu/deploy.sh %DOCKER_IMAGE%"
+                                "/bin/bash /home/ubuntu/deploy.sh %DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%"
 
                             if errorlevel 1 (
+                                echo.
                                 echo ERROR: AWS EC2 deployment failed.
                                 exit /b 1
                             )
@@ -500,7 +519,7 @@ pipeline {
                             echo ============================================================
                             echo AWS EC2 DEPLOYMENT SUCCESSFUL
                             echo ============================================================
-                        """
+                        '''
                     }
                 }
             }
@@ -510,27 +529,35 @@ pipeline {
 
             steps {
 
-                bat """
+                bat '''
                     echo.
                     echo ============================================================
                     echo VERIFY AWS EC2
                     echo ============================================================
                     echo.
 
-                    echo Checking application at:
+                    echo Checking:
                     echo http://%EC2_IP%
 
-                    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-                    "$ok=\\$false; for(\\$i=1; \\$i -le 12; \\$i++){ try { \\$r=Invoke-WebRequest -Uri 'http://%EC2_IP%' -UseBasicParsing -TimeoutSec 10; if(\\$r.StatusCode -eq 200){ \\$ok=\\$true; Write-Host 'AWS application is responding.'; break } } catch { Write-Host ('AWS check attempt ' + \\$i + ' failed.'); }; Start-Sleep -Seconds 5 }; if(-not \\$ok){ exit 1 }"
+                    curl.exe ^
+                        --fail ^
+                        --silent ^
+                        --show-error ^
+                        --max-time 15 ^
+                        --retry 12 ^
+                        --retry-delay 5 ^
+                        --retry-all-errors ^
+                        "http://%EC2_IP/"
 
                     if errorlevel 1 (
+                        echo.
                         echo ERROR: AWS EC2 application verification failed.
                         exit /b 1
                     )
 
                     echo.
-                    echo AWS EC2 verification successful.
-                """
+                    echo AWS EC2 application is responding successfully.
+                '''
             }
         }
 
@@ -540,12 +567,12 @@ pipeline {
 
                 withCredentials([
                     string(
-                        credentialsId: "${RENDER_DEPLOY_HOOK_CREDENTIAL_ID}",
+                        credentialsId: 'render-deploy-hook',
                         variable: 'RENDER_DEPLOY_HOOK'
                     )
                 ]) {
 
-                    bat """
+                    bat '''
                         echo.
                         echo ============================================================
                         echo RENDER DEPLOYMENT
@@ -554,19 +581,26 @@ pipeline {
 
                         echo Triggering Render deployment...
 
-                        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-                        "\\$hook='%RENDER_DEPLOY_HOOK%'; \\$url=\\$hook + '&imgURL=docker.io%%2F%DOCKERHUB_USER%%%2F%IMAGE_NAME%%%3A%BUILD_NUMBER%'; \\$response=Invoke-WebRequest -Uri \\$url -Method Post -UseBasicParsing -TimeoutSec 30; Write-Host ('Render HTTP Status: ' + [int]\\$response.StatusCode); if(([int]\\$response.StatusCode -ne 200) -and ([int]\\$response.StatusCode -ne 202)){ exit 1 }"
+                        curl.exe ^
+                            --fail ^
+                            --silent ^
+                            --show-error ^
+                            --max-time 60 ^
+                            -X POST ^
+                            "%RENDER_DEPLOY_HOOK%"
 
                         if errorlevel 1 (
+                            echo.
                             echo ERROR: Render deployment trigger failed.
                             exit /b 1
                         )
 
                         echo.
                         echo Render deployment triggered successfully.
-                        echo Docker image:
-                        echo %DOCKER_IMAGE%
-                    """
+                        echo.
+                        echo Render URL:
+                        echo %RENDER_URL%
+                    '''
                 }
             }
         }
@@ -575,7 +609,7 @@ pipeline {
 
             steps {
 
-                bat """
+                bat '''
                     echo.
                     echo ============================================================
                     echo VERIFY RENDER
@@ -585,17 +619,25 @@ pipeline {
                     echo Checking:
                     echo %RENDER_URL%
 
-                    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
-                    "$ok=\\$false; for(\\$i=1; \\$i -le 18; \\$i++){ try { \\$r=Invoke-WebRequest -Uri '%RENDER_URL%' -UseBasicParsing -TimeoutSec 15; if(\\$r.StatusCode -eq 200){ \\$ok=\\$true; Write-Host 'Render application is responding.'; break } } catch { Write-Host ('Render check attempt ' + \\$i + ' failed.'); }; Start-Sleep -Seconds 10 }; if(-not \\$ok){ exit 1 }"
+                    curl.exe ^
+                        --fail ^
+                        --silent ^
+                        --show-error ^
+                        --max-time 30 ^
+                        --retry 18 ^
+                        --retry-delay 10 ^
+                        --retry-all-errors ^
+                        "%RENDER_URL%/"
 
                     if errorlevel 1 (
+                        echo.
                         echo ERROR: Render application verification failed.
                         exit /b 1
                     )
 
                     echo.
-                    echo Render verification successful.
-                """
+                    echo Render application is responding successfully.
+                '''
             }
         }
 
@@ -608,12 +650,12 @@ pipeline {
                 echo 'MULTI-CLOUD DEPLOYMENT STATUS'
                 echo '============================================================'
                 echo ''
-                echo "AWS EC2   : http://${params.EC2_IP}"
-                echo "Render    : ${RENDER_URL}"
-                echo "Image     : ${DOCKER_IMAGE}"
+                echo "AWS EC2        : http://${params.EC2_IP}"
+                echo "Render         : ${RENDER_URL}"
+                echo "Docker Image   : ${params.DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
                 echo ''
-                echo 'AWS deployment : SUCCESS'
-                echo 'Render deployment : SUCCESS'
+                echo 'AWS Deployment    : SUCCESS'
+                echo 'Render Deployment : SUCCESS'
                 echo ''
                 echo 'Multi-cloud deployment completed successfully.'
                 echo '============================================================'
@@ -644,12 +686,18 @@ pipeline {
                         exit /b 1
                     )
 
+                    echo.
+                    echo Checking Kubernetes cluster...
+
                     kubectl cluster-info
 
                     if errorlevel 1 (
                         echo ERROR: Kubernetes cluster is not reachable.
                         exit /b 1
                     )
+
+                    echo.
+                    echo Applying Kubernetes manifests...
 
                     if exist "%WORKSPACE%\\k8s\\configmap.yaml" (
                         kubectl apply -f "%WORKSPACE%\\k8s\\configmap.yaml"
@@ -678,6 +726,9 @@ pipeline {
                         )
                     )
 
+                    echo.
+                    echo Waiting for Kubernetes rollout...
+
                     kubectl rollout status deployment/fooddelivery-deployment --timeout=180s
 
                     if errorlevel 1 (
@@ -697,7 +748,7 @@ pipeline {
         always {
 
             echo ''
-            echo 'CI/CD pipeline finished for Build #${BUILD_NUMBER}'
+            echo "CI/CD pipeline finished for Build #${BUILD_NUMBER}"
 
             bat '''
                 echo.
@@ -716,10 +767,10 @@ pipeline {
             echo 'PIPELINE SUCCESSFUL'
             echo '============================================================'
             echo ''
-            echo 'Build Number : ${BUILD_NUMBER}'
-            echo 'Docker Image : ${DOCKER_IMAGE}'
-            echo 'AWS EC2      : http://${EC2_IP}'
-            echo 'Render       : ${RENDER_URL}'
+            echo "Build Number : ${BUILD_NUMBER}"
+            echo "Docker Image : ${params.DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
+            echo "AWS EC2      : http://${params.EC2_IP}"
+            echo "Render       : ${RENDER_URL}"
             echo ''
             echo 'Multi-cloud deployment completed successfully.'
             echo '============================================================'
