@@ -79,29 +79,75 @@ MULTI-CLOUD CI/CD PIPELINE
 
                 bat '''
                     echo.
-                    echo Checking required tools...
-                    echo.
-
+                    echo Checking Java...
                     java -version
-                    if errorlevel 1 exit /b 1
+
+                    if errorlevel 1 (
+                        echo ERROR: Java is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking Maven Wrapper...
+
+                    cd /d "%WORKSPACE%\\%APP_DIR%"
+
+                    if not exist "mvnw.cmd" (
+                        echo ERROR: mvnw.cmd was not found.
+                        echo Expected location:
+                        echo %WORKSPACE%\\%APP_DIR%\\mvnw.cmd
+                        exit /b 1
+                    )
 
                     mvnw.cmd --version
-                    if errorlevel 1 exit /b 1
 
-                    docker --version
-                    if errorlevel 1 exit /b 1
+                    if errorlevel 1 (
+                        echo ERROR: Maven Wrapper is not working.
+                        exit /b 1
+                    )
 
-                    ssh -V
-                    if errorlevel 1 exit /b 1
-
-                    scp -V
-                    if errorlevel 1 exit /b 1
-
-                    curl.exe --version
-                    if errorlevel 1 exit /b 1
+                    cd /d "%WORKSPACE%"
 
                     echo.
-                    echo Required tools are available.
+                    echo Checking Docker...
+                    docker --version
+
+                    if errorlevel 1 (
+                        echo ERROR: Docker is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking SSH...
+                    ssh -V
+
+                    if errorlevel 1 (
+                        echo ERROR: SSH is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking SCP...
+                    scp -V
+
+                    if errorlevel 1 (
+                        echo ERROR: SCP is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking CURL...
+                    curl.exe --version
+
+                    if errorlevel 1 (
+                        echo ERROR: curl.exe is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo ============================================================
+                    echo ENVIRONMENT VALIDATION SUCCESSFUL
+                    echo ============================================================
                 '''
             }
         }
@@ -122,7 +168,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         mvnw.cmd clean test
 
                         if errorlevel 1 (
-                            echo Maven tests failed.
+                            echo ERROR: Maven tests failed.
                             exit /b 1
                         )
 
@@ -149,7 +195,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         mvnw.cmd package -DskipTests
 
                         if errorlevel 1 (
-                            echo Maven package failed.
+                            echo ERROR: Maven package failed.
                             exit /b 1
                         )
 
@@ -178,7 +224,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         mvnw.cmd sonar:sonar
 
                         if errorlevel 1 (
-                            echo SonarQube analysis failed.
+                            echo ERROR: SonarQube analysis failed.
                             exit /b 1
                         )
 
@@ -209,7 +255,7 @@ MULTI-CLOUD CI/CD PIPELINE
                             .
 
                         if errorlevel 1 (
-                            echo Docker build failed.
+                            echo ERROR: Docker build failed.
                             exit /b 1
                         )
 
@@ -246,6 +292,7 @@ MULTI-CLOUD CI/CD PIPELINE
                     )
 
                     echo Docker image validation successful.
+
                     docker images "%DOCKERHUB_USER%/%IMAGE_NAME%"
                 '''
             }
@@ -277,7 +324,7 @@ MULTI-CLOUD CI/CD PIPELINE
                             -p "%DOCKER_PASSWORD%"
 
                         if errorlevel 1 (
-                            echo Docker Hub login failed.
+                            echo ERROR: Docker Hub login failed.
                             exit /b 1
                         )
 
@@ -287,7 +334,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%"
 
                         if errorlevel 1 (
-                            echo Versioned image push failed.
+                            echo ERROR: Versioned image push failed.
                             docker logout
                             exit /b 1
                         )
@@ -298,7 +345,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:latest"
 
                         if errorlevel 1 (
-                            echo Latest image push failed.
+                            echo ERROR: Latest image push failed.
                             docker logout
                             exit /b 1
                         )
@@ -336,13 +383,25 @@ MULTI-CLOUD CI/CD PIPELINE
                             echo Preparing SSH key...
 
                             icacls "%SSH_KEY%" /inheritance:r
-                            if errorlevel 1 exit /b 1
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to remove inherited permissions.
+                                exit /b 1
+                            )
 
                             icacls "%SSH_KEY%" /grant:r "NT AUTHORITY\\SYSTEM:(F)"
-                            if errorlevel 1 exit /b 1
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to grant SYSTEM permissions.
+                                exit /b 1
+                            )
 
                             icacls "%SSH_KEY%" /grant:r "BUILTIN\\Administrators:(F)"
-                            if errorlevel 1 exit /b 1
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to grant Administrators permissions.
+                                exit /b 1
+                            )
 
                             echo.
                             echo SSH key permissions configured.
@@ -428,7 +487,10 @@ MULTI-CLOUD CI/CD PIPELINE
                     echo Checking:
                     echo http://%EC2_IP%
 
-                    curl.exe -sS -L --max-time 15 -o NUL -w "HTTP_STATUS=%%{http_code}" "http://%EC2_IP%"
+                    curl.exe -sS -L --max-time 15 ^
+                        -o NUL ^
+                        -w "HTTP_STATUS=%%{http_code}" ^
+                        "http://%EC2_IP%"
 
                     if errorlevel 1 (
                         echo.
@@ -501,7 +563,10 @@ MULTI-CLOUD CI/CD PIPELINE
                     echo Checking:
                     echo %RENDER_URL%
 
-                    curl.exe -sS -L --max-time 30 -o NUL -w "HTTP_STATUS=%%{http_code}" "%RENDER_URL%"
+                    curl.exe -sS -L --max-time 30 ^
+                        -o NUL ^
+                        -w "HTTP_STATUS=%%{http_code}" ^
+                        "%RENDER_URL%"
 
                     if errorlevel 1 (
                         echo.
@@ -552,7 +617,7 @@ AWS + RENDER DEPLOYMENT COMPLETED
 Kubernetes deployment is enabled, but the current project
 does not automatically deploy to EKS/AKS.
 
-Configure the Kubernetes credentials and manifests before
+Configure Kubernetes credentials and manifests before
 enabling this stage.
 '''
             }
