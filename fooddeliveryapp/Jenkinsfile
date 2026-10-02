@@ -94,8 +94,6 @@ MULTI-CLOUD CI/CD PIPELINE
 
                     if not exist "mvnw.cmd" (
                         echo ERROR: mvnw.cmd was not found.
-                        echo Expected location:
-                        echo %WORKSPACE%\\%APP_DIR%\\mvnw.cmd
                         exit /b 1
                     )
 
@@ -218,9 +216,13 @@ MULTI-CLOUD CI/CD PIPELINE
 
                 dir("${APP_DIR}") {
 
-                    echo 'Starting SonarQube analysis...'
-
                     bat '''
+                        echo.
+                        echo ============================================================
+                        echo SONARQUBE ANALYSIS
+                        echo ============================================================
+                        echo.
+
                         mvnw.cmd sonar:sonar
 
                         if errorlevel 1 (
@@ -292,8 +294,6 @@ MULTI-CLOUD CI/CD PIPELINE
                     )
 
                     echo Docker image validation successful.
-
-                    docker images "%DOCKERHUB_USER%/%IMAGE_NAME%"
                 '''
             }
         }
@@ -409,7 +409,7 @@ MULTI-CLOUD CI/CD PIPELINE
                             echo.
                             echo Converting deploy.sh to Unix LF format...
 
-                            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$p='deploy.sh'; $c=[System.IO.File]::ReadAllText($p); $c=$c.Replace([Environment]::NewLine, [char]10); $c=$c.Replace([char]13, ''); [System.IO.File]::WriteAllText($p,$c,(New-Object System.Text.UTF8Encoding($false)))"
+                            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$p='deploy.sh'; $c=[System.IO.File]::ReadAllText($p); $c=$c -replace '`r`n','`n'; $c=$c -replace '`r',''; [System.IO.File]::WriteAllText($p,$c,(New-Object System.Text.UTF8Encoding($false)))"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to convert deploy.sh line endings.
@@ -428,7 +428,12 @@ MULTI-CLOUD CI/CD PIPELINE
                                 "echo SSH connection successful"
 
                             if errorlevel 1 (
+                                echo.
                                 echo ERROR: SSH connection to EC2 failed.
+                                echo.
+                                echo Verify that the Jenkins credential ec2-ssh-key
+                                echo contains the private key corresponding to the
+                                echo AWS EC2 key pair used by instance %EC2_IP%.
                                 exit /b 1
                             )
 
