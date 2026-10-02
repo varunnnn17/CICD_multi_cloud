@@ -51,6 +51,16 @@ pipeline {
 
         IMAGE_NAME = 'food-delivery'
 
+        /*
+         * Convert Jenkins parameters into environment variables.
+         * These are required by Windows BAT commands using %VARIABLE%.
+         */
+        EC2_IP = "${params.EC2_IP}"
+
+        EC2_USER = "${params.EC2_USER}"
+
+        DOCKERHUB_USER = "${params.DOCKERHUB_USER}"
+
         DOCKER_CREDENTIAL_ID = 'dockercred1'
 
         SSH_CREDENTIAL_ID = 'ec2-ssh-key'
@@ -268,12 +278,27 @@ pipeline {
                         echo ============================================================
                         echo.
 
+                        echo Docker Hub User:
+                        echo %DOCKERHUB_USER%
+
+                        echo.
+                        echo Versioned Image:
+                        echo %DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%
+
+                        echo.
+                        echo Latest Image:
+                        echo %DOCKERHUB_USER%/%IMAGE_NAME%:latest
+
+                        echo.
+                        echo Building Docker image...
+
                         docker build ^
                             -t "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" ^
                             -t "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" ^
                             .
 
                         if errorlevel 1 (
+                            echo.
                             echo ERROR: Docker build failed.
                             exit /b 1
                         )
@@ -298,6 +323,8 @@ pipeline {
                         echo ============================================================
                         echo.
 
+                        echo Checking versioned image...
+
                         docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" >nul
 
                         if errorlevel 1 (
@@ -305,12 +332,19 @@ pipeline {
                             exit /b 1
                         )
 
+                        echo Versioned image exists.
+
+                        echo.
+                        echo Checking latest image...
+
                         docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" >nul
 
                         if errorlevel 1 (
                             echo ERROR: Latest Docker image was not created.
                             exit /b 1
                         )
+
+                        echo Latest image exists.
 
                         echo.
                         echo Docker image validation successful.
@@ -364,6 +398,9 @@ pipeline {
                         )
 
                         echo.
+                        echo Versioned image pushed successfully.
+
+                        echo.
                         echo Pushing latest image...
 
                         docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:latest"
@@ -373,6 +410,9 @@ pipeline {
                             docker logout
                             exit /b 1
                         )
+
+                        echo.
+                        echo Latest image pushed successfully.
 
                         docker logout
 
@@ -403,6 +443,14 @@ pipeline {
                             echo ============================================================
                             echo.
 
+                            echo AWS EC2:
+                            echo %EC2_IP%
+
+                            echo.
+                            echo Docker image:
+                            echo %DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%
+
+                            echo.
                             echo Preparing SSH key permissions...
 
                             icacls "%SSH_KEY%" /inheritance:r
@@ -459,6 +507,7 @@ pipeline {
                                 "%EC2_USER%@%EC2_IP%:/home/ubuntu/deploy.sh"
 
                             if errorlevel 1 (
+                                echo.
                                 echo ERROR: Failed to copy deploy.sh.
                                 exit /b 1
                             )
@@ -477,6 +526,7 @@ pipeline {
                                 "sed -i 's/\\r$//' /home/ubuntu/deploy.sh"
 
                             if errorlevel 1 (
+                                echo.
                                 echo ERROR: Failed to convert deploy.sh to Unix line endings.
                                 exit /b 1
                             )
@@ -495,6 +545,7 @@ pipeline {
                                 "chmod +x /home/ubuntu/deploy.sh"
 
                             if errorlevel 1 (
+                                echo.
                                 echo ERROR: Failed to set execute permission.
                                 exit /b 1
                             )
@@ -536,8 +587,17 @@ pipeline {
                     echo ============================================================
                     echo.
 
+                    echo EC2 IP:
+                    echo %EC2_IP%
+
+                    if "%EC2_IP%"=="" (
+                        echo ERROR: EC2_IP environment variable is empty.
+                        exit /b 1
+                    )
+
+                    echo.
                     echo Checking:
-                    echo http://%EC2_IP%
+                    echo http://%EC2_IP%/
 
                     curl.exe ^
                         --fail ^
@@ -547,7 +607,7 @@ pipeline {
                         --retry 12 ^
                         --retry-delay 5 ^
                         --retry-all-errors ^
-                        "http://%EC2_IP/"
+                        "http://%EC2_IP%/"
 
                     if errorlevel 1 (
                         echo.
@@ -597,6 +657,7 @@ pipeline {
 
                         echo.
                         echo Render deployment triggered successfully.
+
                         echo.
                         echo Render URL:
                         echo %RENDER_URL%
@@ -617,7 +678,7 @@ pipeline {
                     echo.
 
                     echo Checking:
-                    echo %RENDER_URL%
+                    echo %RENDER_URL%/
 
                     curl.exe ^
                         --fail ^
@@ -721,7 +782,7 @@ pipeline {
                         kubectl apply -f "%WORKSPACE%\\k8s\\service.yaml"
 
                         if errorlevel 1 (
-                            echo ERROR: Service manifest failed.
+                            echo ERROR: Service deployment failed.
                             exit /b 1
                         )
                     )
@@ -753,9 +814,7 @@ pipeline {
             bat '''
                 echo.
                 echo Cleaning temporary Docker images...
-
                 docker image prune -f >nul 2>&1
-
                 echo Docker cleanup completed.
             '''
         }
