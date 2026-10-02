@@ -3,8 +3,9 @@ pipeline {
     agent any
 
     options {
-        disableConcurrentBuilds()
         timestamps()
+        skipDefaultCheckout(false)
+        disableConcurrentBuilds()
     }
 
     parameters {
@@ -19,6 +20,12 @@ pipeline {
             name: 'EC2_USER',
             defaultValue: 'ubuntu',
             description: 'AWS EC2 SSH username'
+        )
+
+        string(
+            name: 'DOCKERHUB_USER',
+            defaultValue: 'varun1716',
+            description: 'Docker Hub username'
         )
 
         booleanParam(
@@ -36,22 +43,25 @@ pipeline {
 
     environment {
 
-        DOCKERHUB_USER = 'varun1716'
-        IMAGE_NAME = 'food-delivery'
-
         APP_DIR = 'fooddeliveryapp'
+
         APP_PORT = '8083'
+
         AWS_HOST_PORT = '80'
 
-        DOCKER_CREDENTIALS_ID = 'dockercred1'
-        EC2_CREDENTIALS_ID = 'ec2-ssh-key'
-        SONAR_CREDENTIALS_ID = 'CseSonar'
-        RENDER_CREDENTIALS_ID = 'render-deploy-hook'
+        IMAGE_NAME = 'food-delivery'
+
+        DOCKER_IMAGE = "${params.DOCKERHUB_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
+
+        DOCKER_LATEST = "${params.DOCKERHUB_USER}/${IMAGE_NAME}:latest"
 
         RENDER_URL = 'https://food-delivery-render.onrender.com'
 
-        DOCKER_IMAGE = "varun1716/food-delivery:${BUILD_NUMBER}"
-        DOCKER_LATEST = 'varun1716/food-delivery:latest'
+        DOCKER_CREDENTIAL_ID = 'dockercred1'
+
+        SSH_CREDENTIAL_ID = 'ec2-ssh-key'
+
+        RENDER_DEPLOY_HOOK_CREDENTIAL_ID = 'render-deploy-hook'
     }
 
     stages {
@@ -60,12 +70,11 @@ pipeline {
 
             steps {
 
-                echo '''
-============================================================
-MULTI-CLOUD CI/CD PIPELINE
-============================================================
-'''
-
+                echo ''
+                echo '============================================================'
+                echo 'MULTI-CLOUD CI/CD PIPELINE'
+                echo '============================================================'
+                echo ''
                 echo "Jenkins Agent       : Windows"
                 echo "Application         : Food Delivery Sample"
                 echo "Application Dir     : ${APP_DIR}"
@@ -76,12 +85,12 @@ MULTI-CLOUD CI/CD PIPELINE
                 echo "Render URL          : ${RENDER_URL}"
                 echo "SonarQube Enabled   : ${params.SONAR_ENABLED}"
                 echo "Kubernetes Enabled  : ${params.K8S_ENABLED}"
+                echo ''
 
                 bat '''
                     echo.
                     echo Checking Java...
                     java -version
-
                     if errorlevel 1 (
                         echo ERROR: Java is not available.
                         exit /b 1
@@ -89,8 +98,7 @@ MULTI-CLOUD CI/CD PIPELINE
 
                     echo.
                     echo Checking Maven Wrapper...
-
-                    cd /d "%WORKSPACE%\\%APP_DIR%"
+                    cd /d "%WORKSPACE%\\fooddeliveryapp"
 
                     if not exist "mvnw.cmd" (
                         echo ERROR: mvnw.cmd was not found.
@@ -98,20 +106,24 @@ MULTI-CLOUD CI/CD PIPELINE
                     )
 
                     mvnw.cmd --version
-
                     if errorlevel 1 (
                         echo ERROR: Maven Wrapper is not working.
                         exit /b 1
                     )
 
-                    cd /d "%WORKSPACE%"
-
                     echo.
                     echo Checking Docker...
                     docker --version
-
                     if errorlevel 1 (
                         echo ERROR: Docker is not available.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Checking Git...
+                    git --version
+                    if errorlevel 1 (
+                        echo ERROR: Git is not available.
                         exit /b 1
                     )
 
@@ -119,33 +131,12 @@ MULTI-CLOUD CI/CD PIPELINE
                     echo Checking SSH...
                     ssh -V
 
-                    if errorlevel 1 (
-                        echo ERROR: SSH is not available.
-                        exit /b 1
-                    )
-
                     echo.
                     echo Checking SCP...
-                    scp -V
-
-                    if errorlevel 1 (
-                        echo ERROR: SCP is not available.
-                        exit /b 1
-                    )
+                    where scp
 
                     echo.
-                    echo Checking CURL...
-                    curl.exe --version
-
-                    if errorlevel 1 (
-                        echo ERROR: curl.exe is not available.
-                        exit /b 1
-                    )
-
-                    echo.
-                    echo ============================================================
-                    echo ENVIRONMENT VALIDATION SUCCESSFUL
-                    echo ============================================================
+                    echo Environment validation completed successfully.
                 '''
             }
         }
@@ -216,22 +207,32 @@ MULTI-CLOUD CI/CD PIPELINE
 
                 dir("${APP_DIR}") {
 
-                    bat '''
-                        echo.
-                        echo ============================================================
-                        echo SONARQUBE ANALYSIS
-                        echo ============================================================
-                        echo.
-
-                        mvnw.cmd sonar:sonar
-
-                        if errorlevel 1 (
-                            echo ERROR: SonarQube analysis failed.
-                            exit /b 1
+                    withCredentials([
+                        string(
+                            credentialsId: 'CseSonar',
+                            variable: 'SONAR_TOKEN'
                         )
+                    ]) {
 
-                        echo SonarQube analysis completed successfully.
-                    '''
+                        bat '''
+                            echo.
+                            echo ============================================================
+                            echo SONARQUBE ANALYSIS
+                            echo ============================================================
+                            echo.
+
+                            mvnw.cmd sonar:sonar ^
+                                -Dsonar.token=%SONAR_TOKEN%
+
+                            if errorlevel 1 (
+                                echo ERROR: SonarQube analysis failed.
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo SonarQube analysis completed successfully.
+                        '''
+                    }
                 }
             }
         }
@@ -244,7 +245,7 @@ MULTI-CLOUD CI/CD PIPELINE
 
                     echo "Building Docker image: ${DOCKER_IMAGE}"
 
-                    bat '''
+                    bat """
                         echo.
                         echo ============================================================
                         echo DOCKER BUILD
@@ -252,8 +253,8 @@ MULTI-CLOUD CI/CD PIPELINE
                         echo.
 
                         docker build ^
-                            -t "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" ^
-                            -t "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" ^
+                            -t "${DOCKER_IMAGE}" ^
+                            -t "${DOCKER_LATEST}" ^
                             .
 
                         if errorlevel 1 (
@@ -263,7 +264,7 @@ MULTI-CLOUD CI/CD PIPELINE
 
                         echo.
                         echo Docker images built successfully.
-                    '''
+                    """
                 }
             }
         }
@@ -272,21 +273,21 @@ MULTI-CLOUD CI/CD PIPELINE
 
             steps {
 
-                bat '''
+                bat """
                     echo.
                     echo ============================================================
                     echo DOCKER IMAGE VALIDATION
                     echo ============================================================
                     echo.
 
-                    docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%" >nul
+                    docker image inspect "${DOCKER_IMAGE}" >nul
 
                     if errorlevel 1 (
                         echo ERROR: Versioned Docker image was not created.
                         exit /b 1
                     )
 
-                    docker image inspect "%DOCKERHUB_USER%/%IMAGE_NAME%:latest" >nul
+                    docker image inspect "${DOCKER_LATEST}" >nul
 
                     if errorlevel 1 (
                         echo ERROR: Latest Docker image was not created.
@@ -294,7 +295,7 @@ MULTI-CLOUD CI/CD PIPELINE
                     )
 
                     echo Docker image validation successful.
-                '''
+                """
             }
         }
 
@@ -304,13 +305,13 @@ MULTI-CLOUD CI/CD PIPELINE
 
                 withCredentials([
                     usernamePassword(
-                        credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                        credentialsId: "${DOCKER_CREDENTIAL_ID}",
                         usernameVariable: 'DOCKER_USERNAME',
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
 
-                    bat '''
+                    bat """
                         echo.
                         echo ============================================================
                         echo DOCKER HUB PUSH
@@ -319,9 +320,9 @@ MULTI-CLOUD CI/CD PIPELINE
 
                         echo Logging into Docker Hub...
 
-                        docker login ^
+                        echo %DOCKER_PASSWORD% | docker login ^
                             -u "%DOCKER_USERNAME%" ^
-                            -p "%DOCKER_PASSWORD%"
+                            --password-stdin
 
                         if errorlevel 1 (
                             echo ERROR: Docker Hub login failed.
@@ -329,9 +330,12 @@ MULTI-CLOUD CI/CD PIPELINE
                         )
 
                         echo.
+                        echo Docker Hub login successful.
+
+                        echo.
                         echo Pushing versioned image...
 
-                        docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%"
+                        docker push "${DOCKER_IMAGE}"
 
                         if errorlevel 1 (
                             echo ERROR: Versioned image push failed.
@@ -342,7 +346,7 @@ MULTI-CLOUD CI/CD PIPELINE
                         echo.
                         echo Pushing latest image...
 
-                        docker push "%DOCKERHUB_USER%/%IMAGE_NAME%:latest"
+                        docker push "${DOCKER_LATEST}"
 
                         if errorlevel 1 (
                             echo ERROR: Latest image push failed.
@@ -354,7 +358,7 @@ MULTI-CLOUD CI/CD PIPELINE
 
                         echo.
                         echo Docker Hub push completed successfully.
-                    '''
+                    """
                 }
             }
         }
@@ -367,13 +371,12 @@ MULTI-CLOUD CI/CD PIPELINE
 
                     withCredentials([
                         sshUserPrivateKey(
-                            credentialsId: "${EC2_CREDENTIALS_ID}",
-                            keyFileVariable: 'SSH_KEY',
-                            usernameVariable: 'SSH_CREDENTIAL_USER'
+                            credentialsId: "${SSH_CREDENTIAL_ID}",
+                            keyFileVariable: 'SSH_KEY'
                         )
                     ]) {
 
-                        bat '''
+                        bat """
                             echo.
                             echo ============================================================
                             echo AWS EC2 DEPLOYMENT
@@ -389,39 +392,27 @@ MULTI-CLOUD CI/CD PIPELINE
                                 exit /b 1
                             )
 
-                            icacls "%SSH_KEY%" /grant:r "NT AUTHORITY\\SYSTEM:(F)"
+                            icacls "%SSH_KEY%" /grant:r "NT AUTHORITY\\\\SYSTEM:(F)"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to grant SYSTEM permissions.
                                 exit /b 1
                             )
 
-                            icacls "%SSH_KEY%" /grant:r "BUILTIN\\Administrators:(F)"
+                            icacls "%SSH_KEY%" /grant:r "BUILTIN\\\\Administrators:(F)"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to grant Administrators permissions.
                                 exit /b 1
                             )
 
-                            echo.
                             echo SSH key permissions configured.
-
                             echo.
-                            echo Converting deploy.sh to Unix LF format...
 
-                            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$p='deploy.sh'; $c=[System.IO.File]::ReadAllText($p); $c=$c -replace '`r`n','`n'; $c=$c -replace '`r',''; [System.IO.File]::WriteAllText($p,$c,(New-Object System.Text.UTF8Encoding($false)))"
-
-                            if errorlevel 1 (
-                                echo ERROR: Failed to convert deploy.sh line endings.
-                                exit /b 1
-                            )
-
-                            echo deploy.sh converted successfully.
-
-                            echo.
                             echo Testing SSH connection to EC2...
 
-                            ssh -o StrictHostKeyChecking=no ^
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
                                 -o ConnectTimeout=20 ^
                                 -i "%SSH_KEY%" ^
                                 "%EC2_USER%@%EC2_IP%" ^
@@ -431,39 +422,74 @@ MULTI-CLOUD CI/CD PIPELINE
                                 echo.
                                 echo ERROR: SSH connection to EC2 failed.
                                 echo.
-                                echo Verify that the Jenkins credential ec2-ssh-key
-                                echo contains the private key corresponding to the
-                                echo AWS EC2 key pair used by instance %EC2_IP%.
+                                echo Verify that credential ec2-ssh-key matches
+                                echo the AWS EC2 key pair used by %EC2_IP%.
                                 exit /b 1
                             )
 
                             echo.
                             echo SSH connection successful.
-
                             echo.
+
                             echo Copying deploy.sh to EC2...
 
-                            scp -o StrictHostKeyChecking=no ^
+                            scp ^
+                                -o StrictHostKeyChecking=no ^
                                 -o ConnectTimeout=20 ^
                                 -i "%SSH_KEY%" ^
                                 "deploy.sh" ^
-                                "%EC2_USER%@%EC2_IP%:/home/%EC2_USER%/deploy.sh"
+                                "%EC2_USER%@%EC2_IP%:/home/ubuntu/deploy.sh"
 
                             if errorlevel 1 (
                                 echo ERROR: Failed to copy deploy.sh.
                                 exit /b 1
                             )
 
+                            echo.
                             echo deploy.sh copied successfully.
+                            echo.
+
+                            echo Converting deploy.sh to Unix LF format on EC2...
+
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o ConnectTimeout=20 ^
+                                -i "%SSH_KEY%" ^
+                                "%EC2_USER%@%EC2_IP%" ^
+                                "sed -i 's/\\\\r$//' /home/ubuntu/deploy.sh"
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to convert deploy.sh line endings on EC2.
+                                exit /b 1
+                            )
+
+                            echo.
+                            echo deploy.sh converted successfully on EC2.
+                            echo.
+
+                            echo Setting execute permission...
+
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
+                                -o ConnectTimeout=20 ^
+                                -i "%SSH_KEY%" ^
+                                "%EC2_USER%@%EC2_IP%" ^
+                                "chmod +x /home/ubuntu/deploy.sh"
+
+                            if errorlevel 1 (
+                                echo ERROR: Failed to set execute permission.
+                                exit /b 1
+                            )
 
                             echo.
                             echo Starting AWS deployment...
 
-                            ssh -o StrictHostKeyChecking=no ^
+                            ssh ^
+                                -o StrictHostKeyChecking=no ^
                                 -o ConnectTimeout=20 ^
                                 -i "%SSH_KEY%" ^
                                 "%EC2_USER%@%EC2_IP%" ^
-                                "chmod +x /home/%EC2_USER%/deploy.sh && /home/%EC2_USER%/deploy.sh %DOCKERHUB_USER%/%IMAGE_NAME%:%BUILD_NUMBER%"
+                                "/bin/bash /home/ubuntu/deploy.sh %DOCKER_IMAGE%"
 
                             if errorlevel 1 (
                                 echo ERROR: AWS EC2 deployment failed.
@@ -471,8 +497,10 @@ MULTI-CLOUD CI/CD PIPELINE
                             )
 
                             echo.
-                            echo AWS EC2 deployment completed successfully.
-                        '''
+                            echo ============================================================
+                            echo AWS EC2 DEPLOYMENT SUCCESSFUL
+                            echo ============================================================
+                        """
                     }
                 }
             }
@@ -482,30 +510,27 @@ MULTI-CLOUD CI/CD PIPELINE
 
             steps {
 
-                bat '''
+                bat """
                     echo.
                     echo ============================================================
-                    echo VERIFY AWS APPLICATION
+                    echo VERIFY AWS EC2
                     echo ============================================================
                     echo.
 
-                    echo Checking:
+                    echo Checking application at:
                     echo http://%EC2_IP%
 
-                    curl.exe -sS -L --max-time 15 ^
-                        -o NUL ^
-                        -w "HTTP_STATUS=%%{http_code}" ^
-                        "http://%EC2_IP%"
+                    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+                    "$ok=\\$false; for(\\$i=1; \\$i -le 12; \\$i++){ try { \\$r=Invoke-WebRequest -Uri 'http://%EC2_IP%' -UseBasicParsing -TimeoutSec 10; if(\\$r.StatusCode -eq 200){ \\$ok=\\$true; Write-Host 'AWS application is responding.'; break } } catch { Write-Host ('AWS check attempt ' + \\$i + ' failed.'); }; Start-Sleep -Seconds 5 }; if(-not \\$ok){ exit 1 }"
 
                     if errorlevel 1 (
-                        echo.
-                        echo ERROR: AWS application is not reachable.
+                        echo ERROR: AWS EC2 application verification failed.
                         exit /b 1
                     )
 
                     echo.
-                    echo AWS application is reachable.
-                '''
+                    echo AWS EC2 verification successful.
+                """
             }
         }
 
@@ -515,12 +540,12 @@ MULTI-CLOUD CI/CD PIPELINE
 
                 withCredentials([
                     string(
-                        credentialsId: "${RENDER_CREDENTIALS_ID}",
+                        credentialsId: "${RENDER_DEPLOY_HOOK_CREDENTIAL_ID}",
                         variable: 'RENDER_DEPLOY_HOOK'
                     )
                 ]) {
 
-                    bat '''
+                    bat """
                         echo.
                         echo ============================================================
                         echo RENDER DEPLOYMENT
@@ -529,27 +554,19 @@ MULTI-CLOUD CI/CD PIPELINE
 
                         echo Triggering Render deployment...
 
-                        curl.exe -sS ^
-                            -o render-deploy-response.json ^
-                            -w "HTTP_STATUS=%%{http_code}" ^
-                            -X POST ^
-                            "%RENDER_DEPLOY_HOOK%"
+                        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+                        "\\$hook='%RENDER_DEPLOY_HOOK%'; \\$url=\\$hook + '&imgURL=docker.io%%2F%DOCKERHUB_USER%%%2F%IMAGE_NAME%%%3A%BUILD_NUMBER%'; \\$response=Invoke-WebRequest -Uri \\$url -Method Post -UseBasicParsing -TimeoutSec 30; Write-Host ('Render HTTP Status: ' + [int]\\$response.StatusCode); if(([int]\\$response.StatusCode -ne 200) -and ([int]\\$response.StatusCode -ne 202)){ exit 1 }"
 
                         if errorlevel 1 (
-                            echo ERROR: Failed to contact Render deploy hook.
+                            echo ERROR: Render deployment trigger failed.
                             exit /b 1
                         )
 
                         echo.
-                        echo Render deployment trigger sent successfully.
-
-                        if exist render-deploy-response.json (
-                            echo.
-                            echo Render response:
-                            type render-deploy-response.json
-                            echo.
-                        )
-                    '''
+                        echo Render deployment triggered successfully.
+                        echo Docker image:
+                        echo %DOCKER_IMAGE%
+                    """
                 }
             }
         }
@@ -558,30 +575,27 @@ MULTI-CLOUD CI/CD PIPELINE
 
             steps {
 
-                bat '''
+                bat """
                     echo.
                     echo ============================================================
-                    echo VERIFY RENDER APPLICATION
+                    echo VERIFY RENDER
                     echo ============================================================
                     echo.
 
                     echo Checking:
                     echo %RENDER_URL%
 
-                    curl.exe -sS -L --max-time 30 ^
-                        -o NUL ^
-                        -w "HTTP_STATUS=%%{http_code}" ^
-                        "%RENDER_URL%"
+                    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ^
+                    "$ok=\\$false; for(\\$i=1; \\$i -le 18; \\$i++){ try { \\$r=Invoke-WebRequest -Uri '%RENDER_URL%' -UseBasicParsing -TimeoutSec 15; if(\\$r.StatusCode -eq 200){ \\$ok=\\$true; Write-Host 'Render application is responding.'; break } } catch { Write-Host ('Render check attempt ' + \\$i + ' failed.'); }; Start-Sleep -Seconds 10 }; if(-not \\$ok){ exit 1 }"
 
                     if errorlevel 1 (
-                        echo.
-                        echo ERROR: Render application is not reachable.
+                        echo ERROR: Render application verification failed.
                         exit /b 1
                     )
 
                     echo.
-                    echo Render application is reachable.
-                '''
+                    echo Render verification successful.
+                """
             }
         }
 
@@ -589,22 +603,20 @@ MULTI-CLOUD CI/CD PIPELINE
 
             steps {
 
-                echo '''
-============================================================
-MULTI-CLOUD DEPLOYMENT STATUS
-============================================================
-'''
-
-                echo "AWS EC2    : http://${params.EC2_IP}"
-                echo "Render     : ${RENDER_URL}"
-                echo "Docker     : ${DOCKER_IMAGE}"
-                echo "Build      : #${BUILD_NUMBER}"
-
-                echo '''
-============================================================
-AWS + RENDER DEPLOYMENT COMPLETED
-============================================================
-'''
+                echo ''
+                echo '============================================================'
+                echo 'MULTI-CLOUD DEPLOYMENT STATUS'
+                echo '============================================================'
+                echo ''
+                echo "AWS EC2   : http://${params.EC2_IP}"
+                echo "Render    : ${RENDER_URL}"
+                echo "Image     : ${DOCKER_IMAGE}"
+                echo ''
+                echo 'AWS deployment : SUCCESS'
+                echo 'Render deployment : SUCCESS'
+                echo ''
+                echo 'Multi-cloud deployment completed successfully.'
+                echo '============================================================'
             }
         }
 
@@ -618,13 +630,64 @@ AWS + RENDER DEPLOYMENT COMPLETED
 
             steps {
 
-                echo '''
-Kubernetes deployment is enabled, but the current project
-does not automatically deploy to EKS/AKS.
+                bat '''
+                    echo.
+                    echo ============================================================
+                    echo KUBERNETES DEPLOYMENT
+                    echo ============================================================
+                    echo.
 
-Configure Kubernetes credentials and manifests before
-enabling this stage.
-'''
+                    kubectl version --client
+
+                    if errorlevel 1 (
+                        echo ERROR: kubectl is not available.
+                        exit /b 1
+                    )
+
+                    kubectl cluster-info
+
+                    if errorlevel 1 (
+                        echo ERROR: Kubernetes cluster is not reachable.
+                        exit /b 1
+                    )
+
+                    if exist "%WORKSPACE%\\k8s\\configmap.yaml" (
+                        kubectl apply -f "%WORKSPACE%\\k8s\\configmap.yaml"
+
+                        if errorlevel 1 (
+                            echo ERROR: ConfigMap deployment failed.
+                            exit /b 1
+                        )
+                    )
+
+                    if exist "%WORKSPACE%\\k8s\\deployment.yaml" (
+                        kubectl apply -f "%WORKSPACE%\\k8s\\deployment.yaml"
+
+                        if errorlevel 1 (
+                            echo ERROR: Deployment manifest failed.
+                            exit /b 1
+                        )
+                    )
+
+                    if exist "%WORKSPACE%\\k8s\\service.yaml" (
+                        kubectl apply -f "%WORKSPACE%\\k8s\\service.yaml"
+
+                        if errorlevel 1 (
+                            echo ERROR: Service manifest failed.
+                            exit /b 1
+                        )
+                    )
+
+                    kubectl rollout status deployment/fooddelivery-deployment --timeout=180s
+
+                    if errorlevel 1 (
+                        echo ERROR: Kubernetes rollout failed.
+                        exit /b 1
+                    )
+
+                    echo.
+                    echo Kubernetes deployment completed successfully.
+                '''
             }
         }
     }
@@ -633,7 +696,8 @@ enabling this stage.
 
         always {
 
-            echo "CI/CD pipeline finished for Build #${BUILD_NUMBER}"
+            echo ''
+            echo 'CI/CD pipeline finished for Build #${BUILD_NUMBER}'
 
             bat '''
                 echo.
@@ -647,32 +711,28 @@ enabling this stage.
 
         success {
 
-            echo '''
-============================================================
-PIPELINE SUCCESS
-============================================================
-'''
-
-            echo "AWS EC2    : http://${params.EC2_IP}"
-            echo "Render     : ${RENDER_URL}"
-            echo "Docker     : ${DOCKER_IMAGE}"
-
-            echo '''
-============================================================
-MULTI-CLOUD DEPLOYMENT SUCCESSFUL
-============================================================
-'''
+            echo ''
+            echo '============================================================'
+            echo 'PIPELINE SUCCESSFUL'
+            echo '============================================================'
+            echo ''
+            echo 'Build Number : ${BUILD_NUMBER}'
+            echo 'Docker Image : ${DOCKER_IMAGE}'
+            echo 'AWS EC2      : http://${EC2_IP}'
+            echo 'Render       : ${RENDER_URL}'
+            echo ''
+            echo 'Multi-cloud deployment completed successfully.'
+            echo '============================================================'
         }
 
         failure {
 
-            echo '''
-============================================================
-PIPELINE FAILED
-============================================================
-'''
-
-            echo "Check the failed stage in the Jenkins console output."
+            echo ''
+            echo '============================================================'
+            echo 'PIPELINE FAILED'
+            echo '============================================================'
+            echo ''
+            echo 'Check the failed stage in the Jenkins console output.'
         }
     }
 }
